@@ -204,8 +204,9 @@ type ServerClaimSpec struct {
 }
 ```
 
-No changes to metal-operator itself are required at this time as this
-information is only for the metaldata service to act on.
+Apart from the API change, no changes to the metal-operator controllers are
+required at this time as this information is only for the metaldata service to
+act on.
 
 ## Alternatives
 
