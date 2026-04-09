@@ -99,9 +99,10 @@ In addition to those key-value pairs, the name of the server objects is also
 included in the field `server-name`. Specifying an annotation or label with
 that key overwrites it with the given value.
 
-For data that is common among all servers the operator can define static
-key-value pairs which are set on every response. Those can also be overridden by
-annotations / labels and the key `server-name` cannot be specified.
+For data that is common among all servers (e.g. the region or zone) the operator
+can define static key-value pairs which are set on every response. Those can
+also be overridden by annotations / labels and the key `server-name` cannot be
+specified.
 
 Beyond the server annotations / labels a field for user data will be
 added. This allows us to progress towards feature-parity with metadata services
