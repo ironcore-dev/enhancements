@@ -88,7 +88,7 @@ The top-level keys are populated based on the annotations and labels of the
 server in the following format:
 
 ```yaml
-metadata.ironcore.dev/$key: $value
+metadata.metal.ironcore.dev/$key: $value
 ```
 
 This allows the operator to specify arbitrary key-value pairs in the returned
