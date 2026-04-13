@@ -18,7 +18,7 @@ reviewers:
 
 ---
 
-# IEP-1: Metaldata Service
+# IEP-13: Metaldata Service
 
 ## Table of Contents
 
