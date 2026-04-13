@@ -1,0 +1,12 @@
+.idea
+*.swp
+*.swo
+*~
+.vscode/
+testbin/
+dev/
+charts/
+apiserver.local.config/
+default.etcd/
+.DS_Store
+
