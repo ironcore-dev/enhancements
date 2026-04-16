@@ -47,7 +47,7 @@ This proposal defines metrics generation and collection via prometheus for two s
 1. **sonic-operator**  
    operator-internal metrics: agent reachability, reconciliation health, CR state distribution, and ZTP provisioning. These are recorded directly in the operator process.
 2. **sonic-agent**  
-   switch domain metrics: interface state including SFP transceiver information and error counts, port counts, device readiness, neighbor discovery, device info.
+   switch domain metrics: interface state including SFP transceiver health and error counts, port counts, device readiness, chassis health, device info.
    Each agent serves a `/metrics` HTTP endpoint that performs just-in-time reads from the local SONiC Redis databases on every scrape. Mapping from Redis to Prometheus is done via configuration, with sensible defaults and operator overrides.
 
 Prometheus discovers switch agents via a headless Service and Endpoints resource managed by the operator, following the same ServiceMonitor pattern already used for operator metrics.
@@ -58,12 +58,12 @@ Exposing Prometheus metrics for the operator and the switches it manages enables
 
 - **Fleet-wide observability.** A single dashboard can show interface operational states, port counts, device readiness and physical properties across all switches, making it easy to spot trends, issues and outliers.
 - **Proactive alerting.** Alerting rules such as "switch unreachable for > 5 minutes" or "SFP signal strength outside limits" allow the team to respond to issues before they escalate.
-- **Faster root-cause analysis.** When a reconciliation fails, metrics on agent reachability and per-switch state narrow down whether the cause is network connectivity, agent health, or data inconsistency. Neighbor discovery metrics help identify cabling issues.
+- **Faster root-cause analysis.** When a reconciliation fails, metrics on agent reachability and per-switch state narrow down whether the cause is network connectivity, agent health, or data inconsistency.
 
 ### Goals
 
 - Expose operator-internal metrics: agent reachability, reconciliation outcomes, CR state distribution, and ZTP provisioning.
-- Expose switch domain metrics directly from each agent: interface counts by status, per-interface admin/operational state, error rates of various types, SFP signal information, port count, device readiness, neighbor discovery, and firmware version — served via a `/metrics` HTTP endpoint on each switch agent.
+- Expose switch domain metrics directly from each agent: interface counts by status, per-interface admin/operational state, standard traffic counters (bytes, packets, discards), error and anomaly counters, FEC statistics, interface queue depth, SFP transceiver health (DOM sensors, thresholds, status flags, static info), fan and temperature sensor readings, port count, device readiness, and firmware version, served via a `/metrics` HTTP endpoint on each switch agent.
 - Drive the Redis-to-metric mapping from a YAML configuration file on the agent. Ship a default config covering common operational categories; operators can add, remove, or override mappings without rebuilding the agent.
 - Operator manages a headless Service and Endpoints resource so Prometheus discovers agents automatically as Switch CRs are created or deleted.
 - Reuse existing Prometheus Operator patterns (ServiceMonitor, label-based selection) for both scrape targets.
@@ -116,7 +116,7 @@ graph TD
 There are two independent Prometheus scrape paths:
 
 1. **sonic-operator**: Prometheus scrapes the operator on `:8443` for operator-internal metrics (reachability, reconciliation, CR state, ZTP).
-2. **sonic-agent(s)**: Prometheus scrapes each agent on `:9100`, identified via the scrape targets list in the sonic-operator to retrieve switch domain metrics (interfaces, ports, readiness, neighbors, device info, error rates, queue information, SFP information). Each scrape triggers just-in-time reads from the local SONiC Redis databases.  
+2. **sonic-agent(s)**: Prometheus scrapes each agent on `:9100`, identified via the scrape targets list in the sonic-operator to retrieve switch domain metrics (interfaces, ports, readiness, device info, traffic counters, error and anomaly counters, queue depth, SFP transceiver health, fan and temperature sensor readings). Each scrape triggers just-in-time reads from the local SONiC Redis databases.  
    There may be cases where metrics are not stored in the Redis DB and need to be derived programmatically. None are known as of writing.
 
 The operator communicates with agents over gRPC (`:50051`) for reconciliation. This gRPC connection is also used to probe agent reachability.
@@ -125,14 +125,14 @@ The operator communicates with agents over gRPC (`:50051`) for reconciliation. T
 
 These track how well the operator itself is functioning. They are recorded directly in the operator process:
 
-- **Agent reachability** — reachability and last-contact timestamp for alerting
-- **Reconciliation metrics** — already covered by controller-runtime defaults
-- **CR state distribution** — gauges counting `Switch` and `SwitchInterface` CRs by state (`Pending`/`Ready`/`Failed`). 
-- **ZTP provisioning** — request counts and timestamps recorded when switches fetch their provisioning script from the operator's ZTP handler. ZTP and ONIE related provisioning metrics will need to be collected, but will be specified once we have a working implementation.
+- **Agent reachability:** reachability and last-contact timestamp for alerting
+- **Reconciliation metrics:** already covered by controller-runtime defaults
+- **CR state distribution:** gauges counting `Switch` and `SwitchInterface` CRs by state (`Pending`/`Ready`/`Failed`). 
+- **ZTP provisioning:** request counts and timestamps recorded when switches fetch their provisioning script from the operator's ZTP handler. ZTP and ONIE related provisioning metrics will need to be collected, but will be specified once we have a working implementation.
 
 ### Switch Agent Metrics
 
-Each switch agent serves a `/metrics` HTTP endpoint on `:9100`. On every Prometheus scrape, the agent performs just-in-time reads from the local SONiC Redis databases and returns the current state. There is no caching of dynamic metrics — each scrape reflects the live state of the switch. Static metadata (firmware version, HWSKU, ASIC type, MAC address) changes only on upgrade or re-provisioning and with that sonic-agent restart, and may therefore be cached.
+Each switch agent serves a `/metrics` HTTP endpoint on `:9100`. On every Prometheus scrape, the agent performs just-in-time reads from the local SONiC Redis databases and returns the current state. There is no caching of dynamic metrics; each scrape reflects the live state of the switch. Static metadata (firmware version, HWSKU, ASIC type, MAC address) changes only on upgrade or re-provisioning and with that sonic-agent restart, and may therefore be cached.
 
 The mapping from Redis paths to Prometheus metrics is driven by a configuration file on the agent. The agent ships with a default configuration covering the data categories below. Operators can add, remove, or override individual mappings without rebuilding the agent by providing an alternative mapping configuration.
 
@@ -144,12 +144,13 @@ The mapping from Redis paths to Prometheus metrics is driven by a configuration 
 | Interface oper status | STATE_DB | `PORT_TABLE\|Ethernet*` |
 | Interface admin status | CONFIG_DB | `PORT\|Ethernet*` |
 | Port configuration | APPL_DB | `PORT_TABLE:Ethernet*` |
-| LLDP neighbors | APPL_DB | `LLDP_ENTRY_TABLE:Ethernet*` |
 | SFP DOM sensors | STATE_DB | `TRANSCEIVER_DOM_SENSOR\|Ethernet*` |
 | SFP DOM thresholds | STATE_DB | `TRANSCEIVER_DOM_THRESHOLD\|Ethernet*` |
 | SFP DOM flags | STATE_DB | `TRANSCEIVER_DOM_FLAG\|Ethernet*` |
 | Transceiver info | STATE_DB | `TRANSCEIVER_INFO\|Ethernet*` |
+| Transceiver status | STATE_DB | `TRANSCEIVER_STATUS\|Ethernet*` |
 | Interface error counters | COUNTERS_DB | `COUNTERS:<oid>` via `COUNTERS_PORT_NAME_MAP` |
+| Temperature sensors | STATE_DB | `TEMPERATURE_INFO\|*` |
 
 This reuses the same Redis access patterns already implemented in the agent's existing gRPC RPCs (`GetDeviceInfo`, `ListInterfaces`, etc.).
 
@@ -159,36 +160,38 @@ Thanks to the configuration, other metrics can be added when they are desired, o
 
 The default configuration covers the following data categories:
 
-* **Device metadata** (CONFIG_DB) — firmware version, HWSKU, ASIC type, MAC address. Exposed via the `_info` gauge pattern (a gauge always set to 1, with metadata as labels). Data rarely changes and is useful for fleet inventory queries, filtering and joins with other time series.
+* **Device metadata** (CONFIG_DB): firmware version, HWSKU, ASIC type, platform, MAC address. Exposed via the `_info` gauge pattern (a gauge always set to 1, with metadata as labels). Data rarely changes and is useful for fleet inventory queries, filtering and joins with other time series.
 
-* **Interface state** (STATE_DB, CONFIG_DB) — admin and operational status per interface, aggregate interface counts by status, and total port count. The primary signal for interface health at a glance.
+* **Interface state and traffic counters** (STATE_DB, CONFIG_DB, COUNTERS_DB): admin and operational status per interface, aggregate interface counts by status, and total port count. Standard traffic counters: bytes transferred, packet counts by type (unicast, multicast, broadcast), discards, and SAI-level drops, all per interface and direction. Interface output queue depth. The primary signals for interface health and traffic analysis.
 
-* **Neighbor discovery** (APPL_DB) — LLDP neighbor presence per interface. Useful for cabling verification and detecting disconnected links.
+* **Interface error and anomaly counters** (COUNTERS_DB): aggregate error counters per interface and direction, plus anomaly counters for malformed or unexpected traffic (fragments, jabbers, oversize, undersize, unknown protocols). FEC correctable, uncorrectable, and symbol error frame counts. All are monotonically increasing counters (`_total` suffix). COUNTERS_DB stores values keyed by OID rather than interface name; the agent resolves interface names internally via `COUNTERS_PORT_NAME_MAP` so the metric config does not need to know about OIDs.
 
-* **SFP transceiver diagnostics** (STATE_DB) — three related metric groups:
-  - *DOM sensor readings* — temperature, voltage, TX/RX power, bias current per lane. Each reading is a gauge with `interface` and `sensor` labels (e.g. `sensor="rx_power"`).
-  - *DOM thresholds* — warning and alarm thresholds (high/low) per sensor. Exposed as a single gauge with `sensor`, `level` (`warning`/`alarm`), and `direction` (`high`/`low`) labels. Allows alerting rules to compare a sensor reading against its threshold without hardcoding vendor-specific values.
-  - *DOM flag status* — a severity gauge (0=ok, 1=warning, 2=alarm) derived from SONiC's `TRANSCEIVER_DOM_FLAG` table, which records the flag state the transceiver hardware reports. The agent maps these flags to a numeric severity — it does not compute thresholds itself. This provides a single metric for "is this SFP healthy" without requiring per-sensor threshold comparison in PromQL.
-  - *Transceiver static info* — SFP type, vendor, serial number, model. Exposed as an `_info` gauge.
+* **SFP transceiver health** (STATE_DB): four related metric groups:
+  - *DOM sensor readings:* temperature, voltage, TX/RX power, bias current per lane.
+  - *DOM thresholds:* warning and alarm thresholds (high/low) per sensor.
+  - *Transceiver status:* per-lane RX loss-of-signal and TX fault indicators, each a gauge (1 = fault/loss, 0 = ok).
+  - *Transceiver static info:* SFP type, vendor, serial number, model. Exposed as an `_info` gauge.
 
   Helps detect degradation of optical links before traffic is affected.
 
-* **Interface error counters** (COUNTERS_DB) — CRC, FCS, symbol, alignment, carrier sense, frame-too-long, and internal MAC errors per interface and direction, discards per interface and direction, FEC correctable and uncorrectable frame counts. All are monotonically increasing counters (`_total` suffix). COUNTERS_DB stores values keyed by OID rather than interface name; the agent resolves interface names internally via `COUNTERS_PORT_NAME_MAP` so the metric config does not need to know about OIDs.
+* **Chassis health** (STATE_DB): fan and temperature sensor readings. Per-sensor temperature gauges, high-threshold gauges, and warning status indicators. Useful for monitoring the physical health of the switch chassis and alerting on thermal anomalies.
 
-* **Device readiness** — an overall switch readiness gauge (1 = ready, 0 = not ready).
+* **Device readiness:** an overall switch readiness gauge (1 = ready, 0 = not ready).
+
+> **Note:** Neighbor discovery (LLDP) data is managed by the operator, not exposed as agent metrics.
 
 #### Mapping Configuration
 
 The YAML config file defines how Redis data maps to Prometheus metrics. Each entry specifies:
 
-- `redis_db` + `key_pattern` — which Redis hash keys to read. Support for wildcards (`*`)
-- `fields` — which hash fields to extract
+- `redis_db` + `key_pattern`: which Redis hash keys to read. Support for wildcards (`*`)
+- `fields`: which hash fields to extract
 - Per-field: `metric` name, `type` (gauge / counter), `labels` (with variable references for dynamic values), and optional `transform` for enum mapping or derived values
 
 The following excerpt illustrates representative patterns from the default config:
 
 ```yaml
-# Interface operational state — simple gauge derived from a string field
+# Interface operational state: simple gauge derived from a string field
 - redis_db: STATE_DB
   key_pattern: "PORT_TABLE|*"
   fields:
@@ -200,7 +203,7 @@ The following excerpt illustrates representative patterns from the default confi
       transform:
         map: { up: 1, down: 0 }
 
-# Interface error counters — counter with direction label, OID resolved internally
+# Interface error counters: counter with direction label, OID resolved internally
 - redis_db: COUNTERS_DB
   key_pattern: "COUNTERS:*"
   key_resolver: COUNTERS_PORT_NAME_MAP        # agent resolves OID → port name
@@ -223,8 +226,20 @@ The following excerpt illustrates representative patterns from the default confi
       labels:
         interface: "$port_name"
         type: "correctable"
+    - field: SAI_PORT_STAT_IF_IN_FEC_NOT_CORRECTABLE_FRAMES
+      metric: sonic_switch_interface_fec_frames_total
+      type: counter
+      labels:
+        interface: "$port_name"
+        type: "uncorrectable"
+    - field: SAI_PORT_STAT_IF_IN_FEC_SYMBOL_ERRORS
+      metric: sonic_switch_interface_fec_frames_total
+      type: counter
+      labels:
+        interface: "$port_name"
+        type: "symbol_errors"
 
-# Transceiver info — _info pattern with static metadata as labels
+# Transceiver info: _info pattern with static metadata as labels
 - redis_db: STATE_DB
   key_pattern: "TRANSCEIVER_INFO|*"
   fields:
@@ -238,7 +253,7 @@ The following excerpt illustrates representative patterns from the default confi
         serial: "$serial_number"
         type: "$type"
 
-# SFP DOM thresholds — single metric, dimensions as labels
+# SFP DOM thresholds: single metric, dimensions as labels
 - redis_db: STATE_DB
   key_pattern: "TRANSCEIVER_DOM_THRESHOLD|*"
   field_pattern: "*"                          # iterate all threshold fields
@@ -252,15 +267,26 @@ The following excerpt illustrates representative patterns from the default confi
     level: "$level"                           # warning, alarm
     direction: "$direction"                   # high, low
 
-# SFP DOM flag status — severity gauge derived from flag table
+# Transceiver status: per-lane RX loss-of-signal and TX fault
 - redis_db: STATE_DB
-  key_pattern: "TRANSCEIVER_DOM_FLAG|*"
-  transform:
-    severity_from_flags: true                 # 0=ok, 1=warning, 2=alarm
-  metric: sonic_switch_transceiver_dom_status
-  type: gauge
-  labels:
-    interface: "$key_suffix"
+  key_pattern: "TRANSCEIVER_STATUS|*"
+  fields:
+    - field_pattern: "rxlos*"
+      metric: sonic_switch_transceiver_rxlos
+      type: gauge
+      labels:
+        interface: "$key_suffix"
+        lane: "$lane"                             # extracted from field name
+      transform:
+        map: { "True": 1, "False": 0 }
+    - field_pattern: "txfault*"
+      metric: sonic_switch_transceiver_txfault
+      type: gauge
+      labels:
+        interface: "$key_suffix"
+        lane: "$lane"
+      transform:
+        map: { "True": 1, "False": 0 }
 ```
 
 #### Naming and Labeling Conventions
@@ -268,11 +294,11 @@ The following excerpt illustrates representative patterns from the default confi
 The default config follows Prometheus naming best practices:
 
 - **Prefix:** all agent-emitted metrics use a common prefix (e.g. `sonic_switch_`)
-- **Units in names:** sensor metrics include the unit — `_celsius`, `_dbm`, `_volts`, `_milliamps`. Counters use `_total`.
+- **Units in names:** sensor metrics include the unit, e.g. `_celsius`, `_dbm`, `_volts`, `_milliamps`. Counters use `_total`.
 - **`_info` pattern:** static metadata (device info, transceiver info) is a gauge set to 1 with metadata as labels, enabling `group_left` joins.
 - **Labels from Redis key structure:** the key suffix (the part after `|` or `:`) becomes the `interface` label. For COUNTERS_DB, the agent resolves OIDs to port names internally.
 - **Cardinality control:** related values are grouped under a single metric name with label dimensions (e.g. `direction=rx|tx`, `sensor=temperature|voltage|...`, `level=warning|alarm`, `type=correctable|uncorrectable`) rather than creating separate metric names per variant.
-- **No `switch_name` from the agent:** the agent does not emit a `switch_name` label — it is added at scrape time by Prometheus via ServiceMonitor relabeling (see [Labeling Strategy](#labeling-strategy)).
+- **No `switch_name` from the agent:** the agent does not emit a `switch_name` label. It is added at scrape time by Prometheus via ServiceMonitor relabeling (see [Labeling Strategy](#labeling-strategy)).
 
 ### Prometheus Service Discovery
 
@@ -295,8 +321,8 @@ Static metadata (firmware version, HWSKU, ASIC type, MAC address) uses the `_inf
 **Example metrics from agent scrape** (`:9100` on the switch):
 
 ```
-# Device metadata (CONFIG_DB) — _info pattern
-sonic_switch_info{mac="aa:bb:cc:dd:ee:ff", firmware="4.2.0", hwsku="Accton-AS7726-32X", asic="broadcom"} 1
+# Device metadata (CONFIG_DB), _info pattern
+sonic_switch_info{mac="aa:bb:cc:dd:ee:ff", firmware="4.2.0", hwsku="Accton-AS7726-32X", asic="broadcom", platform="x86_64-accton_as7726_32x-r0"} 1
 
 # Device readiness and aggregate counts
 sonic_switch_ready 1
@@ -307,7 +333,24 @@ sonic_switch_ports_total 48
 # Per-interface state
 sonic_switch_interface_admin_state{interface="Ethernet0"} 1
 sonic_switch_interface_oper_state{interface="Ethernet0"} 1
-sonic_switch_interface_has_neighbor{interface="Ethernet0"} 1
+
+# Interface traffic counters (COUNTERS_DB)
+sonic_switch_interface_bytes_total{interface="Ethernet0", direction="rx"} 6.57e+08
+sonic_switch_interface_bytes_total{interface="Ethernet0", direction="tx"} 1.23e+08
+sonic_switch_interface_packets_total{interface="Ethernet0", direction="rx", type="unicast"} 1199271
+sonic_switch_interface_packets_total{interface="Ethernet0", direction="rx", type="multicast"} 162981
+sonic_switch_interface_packets_total{interface="Ethernet0", direction="tx", type="unicast"} 953331
+sonic_switch_interface_queue_length{interface="Ethernet0"} 0
+
+# Interface error and anomaly counters (COUNTERS_DB, OID resolved internally)
+sonic_switch_interface_errors_total{interface="Ethernet0", direction="rx"} 42
+sonic_switch_interface_errors_total{interface="Ethernet0", direction="tx"} 0
+sonic_switch_interface_discards_total{interface="Ethernet0", direction="rx"} 7
+sonic_switch_interface_anomaly_packets_total{interface="Ethernet0", type="fragments"} 0
+sonic_switch_interface_anomaly_packets_total{interface="Ethernet0", type="jabbers"} 0
+sonic_switch_interface_fec_frames_total{interface="Ethernet0", type="correctable"} 1580
+sonic_switch_interface_fec_frames_total{interface="Ethernet0", type="uncorrectable"} 0
+sonic_switch_interface_fec_frames_total{interface="Ethernet0", type="symbol_errors"} 0
 
 # SFP DOM sensor readings (STATE_DB)
 sonic_switch_transceiver_dom_temperature_celsius{interface="Ethernet0"} 32.5
@@ -315,23 +358,21 @@ sonic_switch_transceiver_dom_voltage_volts{interface="Ethernet0"} 3.31
 sonic_switch_transceiver_dom_rx_power_dbm{interface="Ethernet0", lane="1"} -8.42
 sonic_switch_transceiver_dom_tx_bias_milliamps{interface="Ethernet0", lane="1"} 6.75
 
-# SFP DOM thresholds — single metric, dimensions as labels
+# SFP DOM thresholds: single metric, dimensions as labels
 sonic_switch_transceiver_dom_threshold{interface="Ethernet0", sensor="temperature", level="alarm", direction="high"} 70.0
 sonic_switch_transceiver_dom_threshold{interface="Ethernet0", sensor="rx_power", level="warning", direction="low"} -14.0
 
-# SFP DOM flag status — severity derived from TRANSCEIVER_DOM_FLAG
-sonic_switch_transceiver_dom_status{interface="Ethernet0"} 0
-sonic_switch_transceiver_dom_status{interface="Ethernet4"} 1
+# Transceiver status: per-lane health indicators
+sonic_switch_transceiver_rxlos{interface="Ethernet0", lane="1"} 0
+sonic_switch_transceiver_txfault{interface="Ethernet0", lane="1"} 0
 
 # Transceiver static info
 sonic_switch_transceiver_info{interface="Ethernet0", vendor="Finisar", model="FTLX8574D3BCL", serial="ABC1234", type="QSFP28"} 1
 
-# Interface error counters (COUNTERS_DB, OID resolved internally)
-sonic_switch_interface_errors_total{interface="Ethernet0", direction="rx"} 42
-sonic_switch_interface_errors_total{interface="Ethernet0", direction="tx"} 0
-sonic_switch_interface_discards_total{interface="Ethernet0", direction="rx"} 7
-sonic_switch_interface_fec_frames_total{interface="Ethernet0", type="correctable"} 1580
-sonic_switch_interface_fec_frames_total{interface="Ethernet0", type="uncorrectable"} 0
+# Chassis health: temperature sensors (STATE_DB)
+sonic_switch_temperature_celsius{sensor="CPU_Package_temp"} 37
+sonic_switch_temperature_high_threshold_celsius{sensor="CPU_Package_temp"} 82
+sonic_switch_temperature_warning{sensor="CPU_Package_temp"} 0
 ```
 
 Note: `switch_name` is **not** emitted by the agent. Prometheus adds it at scrape time via the ServiceMonitor relabeling rule, resulting in:
@@ -363,7 +404,7 @@ sonic_ztp_render_errors_total{switch_type="leaf"} 1
 
 ### Staleness and Failure Modes
 
-Because switch domain metrics are served directly by each agent, Prometheus's native staleness handling applies — there is no intermediate caching layer that could serve stale data.
+Because switch domain metrics are served directly by each agent, Prometheus's native staleness handling applies. There is no intermediate caching layer that could serve stale data.
 
 | Scenario | Effect |
 |---|---|
@@ -372,7 +413,7 @@ Because switch domain metrics are served directly by each agent, Prometheus's na
 | **Agent reachable but Redis unhealthy** | Agent returns HTTP 500, `up = 0`. Prometheus treats this the same as a failed scrape. |
 | **Switch CR deleted** | Operator removes the address from the scrape targets, and all associated series go stale. |
 
-This is simpler and more correct than the alternative where the operator caches metrics from agents: in that model, when an agent becomes unreachable, the operator would continue serving the last-known values indefinitely — making it impossible to distinguish "switch is healthy" from "switch has been unreachable for hours."
+This is simpler and more correct than the alternative where the operator caches metrics from agents: in that model, when an agent becomes unreachable, the operator would continue serving the last-known values indefinitely, making it impossible to distinguish "switch is healthy" from "switch has been unreachable for hours."
 
 ## Alternatives
 
@@ -383,8 +424,8 @@ Route all switch domain metrics through the operator: Prometheus scrapes only th
 **Rejected because:**
 
 - **Scaling bottleneck.** As the fleet grows, the operator becomes a fan-in point for all switch metrics. Polling N agents every 30 seconds adds N × RTT of background work and memory for cached results.
-- **Custom staleness logic.** When an agent is unreachable, the operator must decide how long to keep serving last-known values. Getting this wrong means stale data or data gaps — Prometheus already solves this natively via scrape failure detection and configurable staleness.
-- **Redundant complexity.** The operator would need a polling loop, a cache with TTLs, and error handling for partial failures — all of which Prometheus provides out of the box for direct scrape targets.
+- **Custom staleness logic.** When an agent is unreachable, the operator must decide how long to keep serving last-known values. Getting this wrong means stale data or data gaps. Prometheus already solves this natively via scrape failure detection and configurable staleness.
+- **Redundant complexity.** The operator would need a polling loop, a cache with TTLs, and error handling for partial failures, all of which Prometheus provides out of the box for direct scrape targets.
 - **Each agent is already network-reachable** from the cluster for gRPC reconciliation. Adding an HTTP `/metrics` endpoint on the same host requires no new network paths.
 
 ### Alternative 2: gNMI with Telegraf
@@ -393,20 +434,20 @@ Use SONiC's built-in gNMI telemetry interface with a Telegraf collector instead 
 
 **Option A: OpenConfig YANG models.** Query interface and device data via standard OpenConfig paths (e.g. `/openconfig-interfaces:interfaces`).
 
-**Rejected because:** SONiC's `telemetry` module is extremely slow when serving OpenConfig models — approximately 2 seconds per request to list all interfaces. Additionally, the OpenConfig data is incomplete compared to what SONiC tracks internally; fields available in `STATE_DB` and `ASIC_DB` are not fully represented in the OpenConfig models.
+**Rejected because:** SONiC's `telemetry` module is extremely slow when serving OpenConfig models, approximately 2 seconds per request to list all interfaces. Additionally, the OpenConfig data is incomplete compared to what SONiC tracks internally; fields available in `STATE_DB` and `ASIC_DB` are not fully represented in the OpenConfig models.
 
 **Option B: gNMI with direct Redis database paths.** SONiC's gNMI server supports querying Redis databases directly (e.g. `COUNTERS_DB`, `STATE_DB`) via SONiC-native paths, which is significantly faster than the OpenConfig path.
 
-**Rejected because:** The gNMI-over-Redis approach mangles result keys — table prefixes are stripped from key names, and when keys from different tables collide, last-write-wins semantics apply. This produces unreliable and ambiguous data. Querying Redis explicitly through the agent, where we control key resolution and table selection, provides deterministic and complete results.
+**Rejected because:** The gNMI-over-Redis approach mangles result keys: table prefixes are stripped from key names, and when keys from different tables collide, last-write-wins semantics apply. This produces unreliable and ambiguous data. Querying Redis explicitly through the agent, where we control key resolution and table selection, provides deterministic and complete results.
 
 ### Alternative 3: SNMP with snmp_exporter or Telegraf
 
 SONiC ships with `snmpd` (`sonic-snmpagent`) out of the box. A Prometheus `snmp_exporter` or Telegraf could poll switches via standard MIBs (IF-MIB, SNMPv2-MIB, LLDP-MIB).
 
-**Rejected because:** Standard MIBs lack SONiC-specific state from `STATE_DB` and `ASIC_DB`. The `sonic-snmpagent` is itself a Python process reading from Redis — adding a slower, less complete intermediary over a path we already cover directly. SNMP also reintroduces the network reachability problem (UDP 161 to every switch), and IF-MIB walks are slow on large interface tables, comparable to the OpenConfig issue in Alternative 2a.
+**Rejected because:** Standard MIBs lack SONiC-specific state from `STATE_DB` and `ASIC_DB`. The `sonic-snmpagent` is itself a Python process reading from Redis, adding a slower, less complete intermediary over a path we already cover directly. SNMP also reintroduces the network reachability problem (UDP 161 to every switch), and IF-MIB walks are slow on large interface tables, comparable to the OpenConfig issue in Alternative 2a.
 
 ### Alternative 4: Agent pushes to Pushgateway
 
 Each agent pushes metrics to a Prometheus Pushgateway running in the cluster, and Prometheus scrapes the Pushgateway.
 
-**Rejected because:** Pushgateway is designed for short-lived batch jobs, not long-running services. It does not handle staleness — if an agent stops pushing, the last-pushed values persist indefinitely in the Pushgateway with no indication that the source is gone. This is the same stale-data problem as the operator-as-proxy approach (Alternative 1), but worse because there is no operator-side reachability check to flag it. Direct scraping with native Prometheus staleness is the correct model for long-running agents.
+**Rejected because:** Pushgateway is designed for short-lived batch jobs, not long-running services. It does not handle staleness: if an agent stops pushing, the last-pushed values persist indefinitely in the Pushgateway with no indication that the source is gone. This is the same stale-data problem as the operator-as-proxy approach (Alternative 1), but worse because there is no operator-side reachability check to flag it. Direct scraping with native Prometheus staleness is the correct model for long-running agents.
