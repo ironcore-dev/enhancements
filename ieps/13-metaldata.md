@@ -160,7 +160,7 @@ secure. IP addresses must be trustworthy and only operators have direct access
 to the network devices which handle the packets to prevent eavesdropping as the
 service does not implement HTTPS.
 
-We explicitly do not implement the approach of IDMSv2 from AWS which uses a
+We explicitly do not implement the approach of IMDSv2 from AWS which uses a
 token based flow. This is done to allow for simple consumption in environments
 where only very limited tooling is available (like the initrd phase). A future
 version may support such a mechanism as an opt-in feature.
