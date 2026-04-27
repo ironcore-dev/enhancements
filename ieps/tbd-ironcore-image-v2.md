@@ -80,8 +80,10 @@ functionality using e.g. initramfs layering.
   * UKI-like boot mode
   * ISO boot mode
   * Raw EFI boot mode
-* Don't allow specifying UKIs as entire UKI binaries anymore. Instead,
-  split them into their components, allowing layer deduplication.
+* Don't recommend specifying UKIs as UKI binary blobs anymore. Instead,
+  recommend specifying them as UKI image with the distinct layers,
+  allowing for layer deduplication. If someone still chooses to e.g. specify
+  a UKI as raw EFI executable, no deduping / further processing will happen.
 * Create facilities for installer images: Namely, composability of initramfs
   and simple reboot to disk after finishing disk writing.
 
@@ -93,10 +95,13 @@ functionality using e.g. initramfs layering.
 
 Create the following boot types and specs:
 
-### UKI booting
+### UKI component booting
 
-UKI booting is for booting with a comparable structure
-like UKIs itself have.
+UKI component booting is for booting with the components that
+make up a UKI. To keep names concise, `uki` is used as name.
+Though being slightly technically inaccurate (the UKI OCI image is
+not a UKI yet but rather its components), `uki` is a short identifier
+that gives everyone the right mental model.
 
 #### Manifest
 
