@@ -49,6 +49,7 @@ different ways to boot:
 * [UKI](https://github.com/ironcore-dev/ironcore-image/blob/f89db68d5e9323ed5d6024ba70897e077504c25b/image.go#L21)
 * [ISO](https://github.com/ironcore-dev/ironcore-image/blob/f89db68d5e9323ed5d6024ba70897e077504c25b/image.go#L22)
 * [Direct kernel + initramfs](https://github.com/ironcore-dev/ironcore-image/blob/f89db68d5e9323ed5d6024ba70897e077504c25b/image.go#L19)
+* [Squashfs](https://github.com/ironcore-dev/ironcore-image/blob/main/image.go#L20) 
 
 There's even a 'missing' way to boot: 'Raw' EFI executables.
 
@@ -78,10 +79,10 @@ functionality using e.g. initramfs layering.
 * Create the following cleanly separated boot modes, each having their own
   config media and manifest type:
   * UKI-like boot mode
-  * ISO boot mode
-  * Raw EFI boot mode
-* Don't recommend specifying UKIs as UKI binary blobs anymore. Instead,
-  recommend specifying them as UKI image with the distinct layers,
+  * Disk boot mode
+  * Raw EFI executable boot mode
+* Don't specify UKIs as UKI binary blobs anymore. Instead,
+  specify their components (kernel, initrd, stub etc.) as distinct layers,
   allowing for layer deduplication. If someone still chooses to e.g. specify
   a UKI as raw EFI executable, no deduping / further processing will happen.
 * Create facilities for installer images: Namely, composability of initramfs
@@ -198,13 +199,13 @@ Disk booting specifies a disk to boot from.
 
 #### Disk
 
-The disk to boot. Required.
+The disk image to boot.
 
 **Media Type**
 
-Currently, only ISOs via
+Currently, only `raw` files (that could be directly `dd`ed on disk) via
 
-`application/vnd.ironcore.iso`
+`application/vnd.ironcore.raw`
 
 ## Alternatives
 
