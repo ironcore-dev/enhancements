@@ -113,12 +113,17 @@ floor and aisle, or a flat identifier). A recommended format is not prescribed
 location.
 
 > [!NOTE]
-> 1. Since each management cluster corresponds to a single zone / availability
->    zone, an AZ label is not needed — it is implicit from the cluster context.
-> 2. Labels like `height` could theoretically be derived from a device type mapping,
->    but this introduces complexity around vendor naming inconsistencies and hardware
->    revisions. Instead, operators are expected to provide explicit values using
->    their own inventory tooling.
+> Zone and region topology is handled by the well-known Kubernetes labels
+> `topology.kubernetes.io/zone` and `topology.kubernetes.io/region`, which the
+> cloud-controller-manager already applies to nodes. This proposal does not
+> duplicate that mechanism. If an environment spans multiple zones, operators
+> should rely on those standard labels for zone-aware scheduling and filtering.
+
+> [!NOTE]
+> Labels like `height` could theoretically be derived from a device type mapping,
+> but this introduces complexity around vendor naming inconsistencies and hardware
+> revisions. Instead, operators are expected to provide explicit values using
+> their own inventory tooling.
 
 ### Status Fields
 
