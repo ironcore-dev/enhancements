@@ -103,7 +103,7 @@ type Toleration struct {
 ```
 
 Well known taint keys are:
-* `metal.ironcore.dev/needs-maintenance`
+* `metal.ironcore.dev/maintenance`
 * `metal.ironcore.dev/initial`
 
 #### Server
@@ -183,7 +183,6 @@ const (
 Add:
 * `Tolerations`
 * `BootMethod`
-* `Priority`
 
 
 ```go
@@ -219,16 +218,6 @@ type ServerClaimSpec struct {
 
 	// BootMethod configures via which method the server is booted.
 	BootMethod BootMethod `json:"bootMethod,omitempty"`
-
-	// Priority can be any value from -100 to 100. The default is 0. A higher
-	// priority claim gets preferred when multiple claims try to claim the same
-	// server. A claim referencing a specific server will always win over a
-	// claim with a selector.
-	// +kubebuilder:validation:Minimum=-100
-	// +kubebuilder:validation:Maximum=100
-	// +kubebuilder:default=0
-	// +optional
-	Priority int `json:"priority,omitempty"`
 }
 ```
 
@@ -340,16 +329,12 @@ is set to `Available` allowing the server to be claimed by any claim.
 
 ### Maintenance Flow
 
-To schedule a maintenance, the `metal.ironcore.dev/needs-maintenance` taint is
-added to a server and a maintenance object referencing the server is created.
-Depending on the effect of the taint, the maintenance is either executed
-gracefully or forcefully, see [taint effects](#taint-effects) for details. In
-the graceful case the information about this taint is propagated to the workload
-manager which has to react to the taint. The workload is migrated off the server
-and eventually the claim is released allowing the server to transition to the
-`Maintenance` state and the maintenance to begin. If, as part of a maintenance,
-the server must be booted a claim with the appropriate toleration must be
-created with the necessary information.
+In addition to the existing maintenance flow where a maintenance gets bound to a
+server object, the maintenance controller may choose to assign a taint to the
+server to evict any current claim or prevent new claims from binding to the
+server. The `metal.ironcore.dev/maintenance` taint key is well-known for this
+kind of taint. Once the maintenance is done, the maintenance controller clears
+any taints it previously set and the server can be used as before.
 
 ### Boot-Operator
 
@@ -376,11 +361,11 @@ unless the claim explicitly tolerates the taint.
 
 * Add taints & tolerations.
 * New claim phases.
-* Add boot method and priority to claim spec.
+* Add boot method to claim spec.
 * Add image URL field to claim status.
 
-Together with the API changes metal-operator will start to honor taints and
-priority in addition to the existing logic for maintenances. With the addition
+Together with the API changes metal-operator will start to honor taints in
+addition to the existing logic for maintenances. With the addition
 of the new claim phases metal-operator will also start validating the provided
 OCI URL to ensure it's valid.
 
