@@ -28,23 +28,23 @@ reviewers:
 - [Proposal](#proposal)
     - [Enabling gating](#enabling-gating)
     - [Gate configuration](#gate-configuration)
-    - [Taint model](#taint-model)
-    - [Readiness gates and conditions](#readiness-gates-and-conditions)
-    - [Gating controller pattern](#gating-controller-pattern)
+    - [ServerReadinessGate CRD](#serverreadinessgate-crd)
+    - [Controller responsibilities](#controller-responsibilities)
     - [Lifecycle examples](#lifecycle-examples)
     - [Re-gating](#re-gating)
+    - [Observability](#observability)
 - [Dependencies](#dependencies)
 - [Related](#related)
 
 ## Summary
 
-Introduce a generic availability gating mechanism that allows external controllers to block servers from being claimed until all declared gates pass. Gates are configured cluster-wide via a ConfigMap, stamped as `NoBind` taints on the `Server` at creation and maintenance exit, tracked via `status.conditions`, and enforced until a gating controller confirms all conditions are satisfied.
+Introduce a generic availability gating mechanism that allows external controllers to block servers from being claimed until all declared gates pass. Gates are configured cluster-wide via a ConfigMap, enforced via a single `metal.ironcore.dev/not-ready: NoBind` taint on the `Server`, and tracked via a dedicated `ServerReadinessGate` CRD. Any external controller can own and reconcile its respective gate condition independently.
 
 ## Motivation
 
-Servers entering the fleet may fail pre-availability checks (e.g. physical wiring, firmware compliance). Without a gating mechanism, a server can reach `Available` state and get claimed before these checks pass, leading to issues at workload runtime.
+Servers entering the fleet may fail pre-availability checks (e.g. physical wiring, unclean disks). Without a gating mechanism, a server can reach `Available` state and get claimed before these checks pass, leading to issues at workload runtime.
 
-The driving use case is network topology verification: an external controller compares discovered interface data against an authoritative source and only clears its gate condition once the topology matches. Other gate types (e.g. firmware validation) follow the same pattern without requiring changes to metal-operator or other gate controllers.
+The driving use case is network topology verification: an external controller compares discovered interface data against an authoritative source and only clears its gate condition once the topology matches. Other gate types (e.g. disk sanitization) follow the same pattern without requiring changes to metal-operator or other gate controllers.
 
 ### Goals
 
@@ -59,7 +59,8 @@ The driving use case is network topology verification: an external controller co
 - Defining the logic run by individual gate controllers
 - Replacing existing maintenance workflows
 - Per-server or per-server-class gate configuration (cluster-wide only for now)
-- Re-gating triggered by external events other than maintenance exit — gate controllers may re-add their own taints independently, but this is not orchestrated by metal-operator
+- Eviction of already-reserved servers based on gate state
+- Automatic timeout or force-removal of the `not-ready` taint for stuck gates — operators should alert on long-gated servers via the provided metrics
 
 ## Proposal
 
@@ -68,15 +69,21 @@ The driving use case is network topology verification: an external controller co
 Metal-operator gains a `--availability-gating` flag that accepts a comma-separated list of trigger points:
 
 ```
---availability-gating=creation,maintenance
+--availability-gating=creation,maintenance,release
 ```
 
 | Value | Behavior |
 |---|---|
-| `creation` | Apply gate taints unconditionally at `Initial` → `Discovery` |
-| `maintenance` | Re-apply gate taints unconditionally on `Maintenance` exit |
+| `creation` | Set `metal.ironcore.dev/not-ready: NoBind` taint and create `ServerReadinessGate` at `Initial` → `Discovery` |
+| `maintenance` | Re-set the taint and re-create the `ServerReadinessGate` on `Maintenance` exit |
+| `release` | Re-set the taint and re-create the `ServerReadinessGate` when a server transitions from `Reserved` back to `Available` |
 
 The default is empty (gating disabled). Existing deployments are unaffected unless the flag is explicitly set.
+
+**Trigger points are the only moments when the ConfigMap is evaluated.** The gate list is snapshotted into the `ServerReadinessGate` at trigger time and not updated mid-flight. A ConfigMap change takes effect at the next trigger — the next creation, maintenance exit, or reservation release, depending on which triggers are enabled. This means:
+
+- A gate added to the ConfigMap while a server is in `Discovery` will not apply to that server until its next trigger.
+- A gate added while a server is `Reserved` will be picked up at maintenance exit (if `maintenance` is enabled) or reservation release (if `release` is enabled).
 
 ### Gate configuration
 
@@ -89,141 +96,153 @@ metadata:
   name: metal-operator-availability-gating
 data:
   gates: |
-    - metal.ironcore.dev/gate-network
-    - metal.ironcore.dev/gate-firmware
+    - conditionType: NetworkTopologyVerified
+      triggers: [creation, maintenance]
+    - conditionType: DiskSanitized
+      triggers: [release]
 ```
 
-Metal-operator watches this ConfigMap at runtime. At each trigger point it reads the current gate list and stamps the corresponding taints and `readinessGates` onto the Server. Adding or removing a gate from the ConfigMap takes effect for the next trigger (next server creation or maintenance exit) without restarting metal-operator.
+Metal-operator reads this ConfigMap at each trigger point and stamps only the gates whose `triggers` list includes the current trigger. Adding or removing a gate takes effect at the next trigger without restarting metal-operator.
 
-### Taint model
+### ServerReadinessGate CRD
 
-Two categories of `NoBind` taints are used:
+Metal-operator creates a `ServerReadinessGate` object for each gated server at trigger time, populated from the ConfigMap snapshot. The `ServerReadinessGate` is owned by the `Server` object — deletion of the `Server` cascades to the gate object. On re-trigger, metal-operator deletes the existing `ServerReadinessGate` and creates a new one; gate controllers must detect the new object and re-evaluate their conditions from scratch. External gate controllers write their conditions to this object. Metal-operator removes the `not-ready` taint from the `Server` when all conditions are `True`.
 
-- `metal.ironcore.dev/uninitialized` — set by metal-operator at each trigger point, removed by the gating controller once all gate conditions are satisfied. This is the master lock that prevents claiming.
-- `metal.ironcore.dev/gate-<type>` — one per gate, set by metal-operator at each trigger point, removed by the respective gate controller when its check passes.
+A condition listed in `spec.gates` but absent from `status.conditions` is treated as blocking — metal-operator will not remove the `not-ready` taint until all declared conditions are explicitly present and `True`.
 
-Each controller has exclusive ownership of its taint key, eliminating write races.
-
-### Readiness gates and conditions
-
-Metal-operator writes `spec.readinessGates` from the ConfigMap at each trigger point, mirroring the gate list.
-
-Each external gate controller owns a condition in `status.conditions` corresponding to its gate type. It creates the condition when it first reconciles the Server and updates it as its check progresses.
-
-Metal-operator removes the `uninitialized` taint only when all conditions listed in `readinessGates` have `status: "True"`.
-
-### Controller responsibilities
-
-**metal-operator:**
-- Sets `uninitialized` + all `gate-*` taints at each trigger point (from the ConfigMap gate list)
-- Writes `readinessGates` on the Server from the ConfigMap gate list
-- Watches `Server` objects and removes the `uninitialized` taint when all `readinessGates` conditions are `True`
-- Does not implement any gate logic itself
-
-**External gate controllers** (one per gate type):
-- Watch `Server` objects independently
-- Remove their own `gate-<type>` taint when their check passes
-- Update their corresponding condition in `status.conditions`
-- Do not interact with the `uninitialized` taint
-
-New gate types are introduced by deploying a new gate controller and adding its key to the ConfigMap — no changes to metal-operator or existing gate controllers required.
-
-### Lifecycle examples
-
-**Server at creation — all gates pending:**
 ```yaml
+apiVersion: metal.ironcore.dev/v1alpha1
+kind: ServerReadinessGate
+metadata:
+  name: compute-01
+  namespace: default
 spec:
-  readinessGates:
+  serverRef:
+    name: compute-01
+  gates:
     - conditionType: NetworkTopologyVerified
-    - conditionType: FirmwareCompliant
-  taints:
-    - key: metal.ironcore.dev/uninitialized
-      effect: NoBind
-    - key: metal.ironcore.dev/gate-network
-      effect: NoBind
-    - key: metal.ironcore.dev/gate-firmware
-      effect: NoBind
-status:
-  conditions:
-    - type: NetworkTopologyVerified
-      status: "False"
-      reason: Pending
-    - type: FirmwareCompliant
-      status: "False"
-      reason: Pending
-```
-
-**Firmware gate passes — network still pending:**
-```yaml
-spec:
-  readinessGates:
-    - conditionType: NetworkTopologyVerified
-    - conditionType: FirmwareCompliant
-  taints:
-    - key: metal.ironcore.dev/uninitialized
-      effect: NoBind
-    - key: metal.ironcore.dev/gate-network
-      effect: NoBind
+    - conditionType: DiskSanitized
 status:
   conditions:
     - type: NetworkTopologyVerified
       status: "False"
       reason: TopologyMismatch
-    - type: FirmwareCompliant
+    - type: DiskSanitized
       status: "True"
-      reason: VersionMatch
+      reason: Sanitized
 ```
 
-**All gates pass — metal-operator removes `uninitialized`, server can be claimed:**
+### Controller responsibilities
+
+**Metal-operator:**
+- Sets `metal.ironcore.dev/not-ready: NoBind` taint on the `Server` at each trigger point
+- Creates the `ServerReadinessGate` object from the ConfigMap snapshot at each trigger point
+- Watches `ServerReadinessGate` objects and removes the `not-ready` taint when all conditions are `True`
+- Does not implement any gate logic itself
+
+**External gate controllers** (one per gate type):
+- Watch `ServerReadinessGate` objects independently
+- Write their condition to `status.conditions` of the `ServerReadinessGate`
+- Do not interact with the `Server` taint directly
+
+New gate types are introduced by deploying a new gate controller and adding its condition type to the ConfigMap — no changes to metal-operator or existing gate controllers required.
+
+### Lifecycle examples
+
+**Server at creation — all gates pending:**
 ```yaml
+# Server
 spec:
-  readinessGates:
+  taints:
+    - key: metal.ironcore.dev/not-ready
+      effect: NoBind
+
+# ServerReadinessGate
+spec:
+  serverRef:
+    name: compute-01
+  gates:
     - conditionType: NetworkTopologyVerified
-    - conditionType: FirmwareCompliant
+    - conditionType: DiskSanitized
+status:
+  conditions:
+    - type: NetworkTopologyVerified
+      status: "False"
+      reason: Pending
+    - type: DiskSanitized
+      status: "False"
+      reason: Pending
+```
+
+**DiskSanitized gate passes — network still pending:**
+```yaml
+# Server
+spec:
+  taints:
+    - key: metal.ironcore.dev/not-ready
+      effect: NoBind
+
+# ServerReadinessGate
+status:
+  conditions:
+    - type: NetworkTopologyVerified
+      status: "False"
+      reason: TopologyMismatch
+    - type: DiskSanitized
+      status: "True"
+      reason: Sanitized
+```
+
+**All gates pass — metal-operator removes `not-ready`, server can be claimed:**
+```yaml
+# Server
+spec:
   taints: []
+
+# ServerReadinessGate
 status:
   conditions:
     - type: NetworkTopologyVerified
       status: "True"
       reason: TopologyMatch
-    - type: FirmwareCompliant
+    - type: DiskSanitized
       status: "True"
-      reason: VersionMatch
+      reason: Sanitized
 ```
 
 ### Re-gating
 
-When `maintenance` is included in `--availability-gating`, metal-operator re-applies all gate taints and resets `readinessGates` on `Maintenance` exit. External gate controllers re-evaluate their conditions from scratch, and metal-operator removes the `uninitialized` taint only once all gates pass again.
+At each trigger point metal-operator re-sets the `not-ready` taint and re-creates the `ServerReadinessGate` from the current ConfigMap snapshot. External gate controllers re-evaluate their conditions from scratch, and metal-operator removes the taint only once all gates pass again.
 
-External gate controllers may also independently re-add their own `gate-<type>` taint at any time. Metal-operator honors any `NoBind` taint present on a Server regardless of who set it.
-
-**`NoBind` taints do not affect `Reserved` servers.** A `NoBind` taint is only evaluated at claim time — it prevents a new `ServerClaim` from binding, but does not evict or invalidate an existing reservation. If a `Reserved` server is re-tainted, the taint takes effect when the reservation is released and a new claim attempt is made. Eviction of a live server is out of scope for this mechanism.
+**`NoBind` taints do not affect `Reserved` servers.** The `not-ready` taint is only evaluated at claim time — it prevents a new `ServerClaim` from binding, but does not evict or invalidate an existing reservation. If a `Reserved` server is re-tainted, the taint takes effect when the reservation is released and a new claim attempt is made.
 
 ### Observability
 
-Metal-operator exposes metrics for servers carrying `NoBind` taints.
+Metal-operator exposes metrics for servers carrying the `not-ready` taint.
 
-Per-server metric — one time series per server/taint combination, value `1` while the taint is active:
-
-```
-metaloperator_server_nobind_taint{server="compute-01", namespace="default", taint="metal.ironcore.dev/uninitialized"} 1
-metaloperator_server_nobind_taint{server="compute-01", namespace="default", taint="metal.ironcore.dev/gate-network"} 1
-metaloperator_server_nobind_taint{server="compute-01", namespace="default", taint="metal.ironcore.dev/gate-firmware"} 1
-```
-
-Aggregate metric — count of servers per taint key:
+Per-server metric — one time series per server, value `1` while the taint is active:
 
 ```
-metaloperator_server_nobind_taint_total{taint="metal.ironcore.dev/uninitialized"} 5
-metaloperator_server_nobind_taint_total{taint="metal.ironcore.dev/gate-network"} 3
-metaloperator_server_nobind_taint_total{taint="metal.ironcore.dev/gate-firmware"} 1
+metaloperator_server_nobind_taint{server="compute-01", namespace="default"} 1
 ```
 
-This allows operators to identify which specific servers are gated, which gate is the bottleneck, and track the overall fleet gating state.
+Aggregate metric — total count of servers currently gated:
+
+```
+metaloperator_server_nobind_taint_total 5
+```
+
+Individual gate condition state is visible via `kubectl get serverreadinessgates`:
+
+```
+NAME          SERVER      NETWORKTOPOLOGYVERIFIED   DISKSANITIZED
+compute-01   compute-01  False (TopologyMismatch)   True (Sanitized)
+compute-02   compute-02  True (TopologyMatch)       False (Pending)
+```
 
 ## Dependencies
 
-- **metal-operator**: `--availability-gating` flag, ConfigMap watch, taint + `readinessGates` stamping at trigger points
+- **metal-operator**: `--availability-gating` flag, ConfigMap watch, `ServerReadinessGate` CRD, taint management
 - **ironcore-dev/metal-operator#672**: Server taints
 
 ## Related
