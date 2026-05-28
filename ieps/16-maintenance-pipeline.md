@@ -9,7 +9,7 @@ status: draft
 
 authors:
 
-- "@nagdeesh"
+- "@nagadeesh-nagaraja"
 
 reviewers:
 
@@ -43,7 +43,7 @@ reviewers:
 
 ## Summary
 
-`MaintenancePipeline` is a new higher-level API that expresses the full desired maintenance lifecycle for a bare-metal fleet in a single authored resource. It orchestrates ordered execution of BMC and BIOS settings and upgrade stages across all servers matched by a label selector, it also handls the 1-BMC-to-N-servers relationship automatically, and reusing drift detection and failure recovery from the existing controllers and controlling the order at higher level.
+`MaintenancePipeline` is a new higher-level API that expresses the full desired maintenance lifecycle for a bare-metal fleet in a single authored resource. It orchestrates ordered execution of BMC and BIOS settings and upgrade stages across all servers matched by a label selector; it also handles the 1-BMC-to-N-servers relationship automatically, reuses drift detection and failure recovery from the existing controllers, and controls the order at a higher level.
 
 ## Motivation
 
@@ -242,7 +242,18 @@ status:
 
 Stages execute **strictly in list order**. The Run controller stamps the child for stage `N` only after stage `N-1` reaches `Completed`. There is no parallelism within a single Run.
 
-For Server-scoped stages (`BIOSSettings` / `BIOSVersion`), the Run stamps children **simultaneously for all servers** in `serverRefs`. Each server then advances through subsequent Server-scoped stages **independently** — a server moves to the next stage as soon as its own child completes, without waiting for other servers. The aggregate stage phase reflects the slowest server.
+For Server-scoped stages (`BIOSSettings` / `BIOSVersion`), the Run stamps children **simultaneously for all servers** in `serverRefs`. Each server then advances through subsequent Server-scoped stages **independently** — a server moves to the next stage as soon as its own child completes, without waiting for other servers.
+
+The aggregate phase for a Server-scoped stage is defined explicitly as follows:
+
+| Aggregate phase | Meaning |
+|---|---|
+| `Pending` | No server child has started yet |
+| `InProgress` | At least one server child is progressing |
+| `Failed` | At least one server child failed |
+| `Completed` | All server children completed |
+
+Phase precedence is `Failed` > `InProgress` > `Pending` > `Completed` only when computing the aggregate from mixed server states; `Completed` means every server child finished successfully.
 
 `maxConcurrent` caps **fleet-level** parallelism: how many `MaintenancePipelineRun` objects (unique BMCs) may be `InProgress` simultaneously. Stages within a single Run are always sequential.
 
@@ -331,10 +342,10 @@ The following timeline shows a full factory reset scenario where BMC regressed t
            → BIOSSettings applies PxeBootToFirstInterface → Applied → driftPolicy: Observe
 
 [T+6]  bios-pre-upgrade Completed (all servers)
-         Run patches spec.driftPolicy: "" on existing bios-fw-v240 children (× 3)
-           (v2.10 ≠ v2.40 → children re-execute → upgrade)
+         Run patches spec.driftPolicy: "" on existing bios-fw-v250 children (× 3)
+           (v2.10 ≠ v2.50 → children re-execute → upgrade)
 
-[T+7]  BIOSVersion v2.40 Completed per server → driftPolicy: Suspend
+[T+7]  BIOSVersion v2.50 Completed per server → driftPolicy: Suspend
          Run patches spec.driftPolicy: "" on existing bios-fw-v250 children (× 3)
 
 [T+8]  BIOSVersion v2.50 Completed per server → driftPolicy: Observe
