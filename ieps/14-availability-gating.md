@@ -27,24 +27,23 @@ reviewers:
     - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
     - [Overview](#overview)
-    - [Bootstrap taint](#bootstrap-taint)
-    - [External gate controllers](#external-gate-controllers)
+    - [ReadinessGateController](#readinessgatecontroller)
     - [ServerReadinessRule CRD](#serverreadinessrule-crd)
-    - [Lifecycle example](#lifecycle-example)
-    - [Re-gating](#re-gating)
+    - [Enforcement modes](#enforcement-modes)
+    - [Lifecycle examples](#lifecycle-examples)
     - [Observability](#observability)
 - [Dependencies](#dependencies)
 - [Related](#related)
 
 ## Summary
 
-Introduce a generic availability gating mechanism that prevents servers from being claimed until all declared readiness gates pass. The design follows the upstream [Kubernetes Node Readiness Controller](https://kubernetes.io/blog/2026/02/03/introducing-node-readiness-controller/) pattern: metal-operator sets a bootstrap taint at server creation, external gate controllers independently manage their own gate-specific taints and report conditions on the `Server` object, and metal-operator removes the bootstrap taint once all gate taints are cleared.
+Introduce a generic availability gating mechanism that prevents servers from being claimed until all declared readiness gates pass. A `ServerReadinessRule` declares which servers to target, which condition to monitor, and which taint to manage. The `ReadinessGateController` inside metal-operator watches rules and `Server` conditions and manages taint add/remove. Any entity with the appropriate permissions can write conditions on `Server` objects — they need not be aware that a rule exists.
 
 ## Motivation
 
 Servers entering the fleet may fail pre-availability checks (e.g. physical wiring, unclean disks). Without a gating mechanism, a server can reach `Available` state and get claimed before these checks pass, leading to issues at workload runtime.
 
-The driving use case is network topology verification: an external controller compares discovered interface data against an authoritative source and only clears its gate condition once the topology matches. Other gate types follow the same pattern without requiring changes to metal-operator.
+The driving use cases are network topology verification (an external controller compares discovered interface data against an authoritative source) and disk sanitization (prior workload data must be wiped before the server is re-claimable). Other gate types follow the same pattern without requiring changes to metal-operator.
 
 ### Goals
 
@@ -56,7 +55,7 @@ The driving use case is network topology verification: an external controller co
 
 ### Non-Goals
 
-- Defining the logic run by individual gate controllers
+- Defining the logic run by individual external controllers
 - Replacing existing maintenance workflows
 - Automatic timeout or force-removal of taints for stuck gates — operators should alert on long-gated servers via the provided metrics
 - Eviction of already-reserved servers based on gate state
@@ -65,80 +64,73 @@ The driving use case is network topology verification: an external controller co
 
 ### Overview
 
-Gating is enforced via `NoClaim` taints on the `Server` object. A server can only be claimed when all `NoClaim` taints are gone. There are two categories of taint:
+The taints of `Server` objects can be manipulated via `ServerReadinessRule` objects. These rules monitor the `.status.conditions` of a `Server` for a specific condition type and status.
 
-- **Bootstrap taint** (`metal.ironcore.dev/not-ready`) — set by metal-operator at trigger points, removed by metal-operator once no other `NoClaim` taints remain
-- **Gate taints** (e.g. `metal.ironcore.dev/network-not-ready`) — set and removed by external gate controllers, one taint key per gate type
+If the specific condition type is not present in the expected status, a taint specified in the rule is applied to the `Server`.
 
-Each controller has exclusive ownership of its taint key. They never interact with each other's taints.
+Once the condition is present in the expected status, the taint is removed.
 
-### Bootstrap taint
+This makes a `Server` unclaimable to `ServerClaim`s that don't have the required tolerations.
 
-Metal-operator sets the bootstrap taint automatically — no feature flag is required. At each trigger point, metal-operator checks whether any `ServerReadinessRule` matches the server. If at least one does, the bootstrap taint is set. Servers with no matching rules are unaffected and proceed normally.
+### ReadinessGateController
 
-| Trigger | Behavior |
-|---|---|
-| `creation` | Set `metal.ironcore.dev/not-ready: NoClaim` at `Initial` → `Discovery` |
-| `maintenance` | Re-set the taint on `Maintenance` exit |
-| `release` | Re-set the taint when a server transitions from `Reserved` back to `Available` |
+The `ReadinessGateController` runs inside metal-operator and:
 
-The bootstrap taint carries the trigger reason as its `value` field:
+- Watches all `ServerReadinessRule` objects and all `Server` objects
+- At each trigger point, evaluates which rules match a server and applies the corresponding taints
+- Watches `Server.status.conditions` and removes a taint when its condition is satisfied
+- Manages rule lifecycle: adds a finalizer at rule creation, removes orphaned taints on rule deletion or selector change
 
-```yaml
-taints:
-  - key: metal.ironcore.dev/not-ready
-    value: "creation"   # or: "maintenance", "release"
-    effect: NoClaim
-```
-
-Gate controllers can inspect the taint value to fast-forward checks where appropriate. A disk sanitization controller seeing `value: "creation"` knows no prior workload ran on the server and can immediately mark its condition `True`. Seeing `value: "release"` it performs the full sanitization. This is a hint — gate controllers are not required to act differently per trigger value.
-
-Metal-operator removes the bootstrap taint once no other `NoClaim` taints remain on the server. The expected flow is that external gate controllers apply their gate taints early in Discovery (which takes several minutes), so by the time Discovery completes the gate taints are in place. If no gate controllers target the server, the bootstrap taint is removed at the end of Discovery and the server proceeds normally.
-
-**`NoClaim` taints do not affect `Reserved` servers.** The taint is only evaluated at claim time — it prevents a new `ServerClaim` from binding but does not evict an existing reservation. Taints added while a server is `Reserved` (e.g. hardware degradation detected during a workload's lifetime) are preserved and not cleaned up on reservation. When the server is released and transitions back to `Available`, the `release` trigger fires: metal-operator re-sets the bootstrap taint and all matching gate controllers re-evaluate. The server becomes claimable again only after all taints are cleared.
-
-### External gate controllers
-
-External gate controllers are independent components, one per gate type. Each gate controller:
-
-- Watches `Server` objects via a label selector defined in the matching `ServerReadinessRule`
-- Applies its own gate taint to matching servers
-- Runs its check and writes its condition to `Server.status.conditions`
-- Removes its own gate taint when its condition passes
-
-Gate controllers do not interact with the bootstrap taint or with each other.
-
-**Re-arm contract:** when a gate controller re-arms at a trigger point (i.e. it applies its gate taint because the bootstrap taint appeared on a matching server), it must reset its condition to `False` before running its check. This ensures a passing condition from a previous cycle does not carry over and cause the gate to be skipped.
-
-Servers are brought into scope via the `spec.serverSelector` in the `ServerReadinessRule` — this is the gate controller's targeting configuration. Any labels already present on the server (hardware type, region, zone, etc.) can be used; no dedicated gate labels are required.
+Any entity with the appropriate permissions can write conditions on `Server.status.conditions`. They do not need to apply or remove taints and need not be aware of any `ServerReadinessRule` that references their condition type.
 
 ### ServerReadinessRule CRD
 
-A `ServerReadinessRule` is a cluster-scoped resource, created once by whoever deploys a gate controller. It declares which servers the gate controller targets, which condition it monitors, and which taint it manages. Gate controllers read rules to determine which servers to target and which taint to manage. Metal-operator watches rules solely for lifecycle management: it adds a finalizer at creation and removes orphaned gate taints on deletion or selector change.
+A `ServerReadinessRule` is a cluster-scoped resource that declares:
 
-**Rule lifecycle managed by metal-operator:**
-
-- At creation, metal-operator adds `metal.ironcore.dev/serverreadinessgc` as a finalizer.
-- On deletion (`deletionTimestamp` set), metal-operator removes the rule's taint from all servers that carry it, then releases the finalizer. The gate controller being unavailable at deletion time does not block cleanup.
-- On `spec.serverSelector` change, metal-operator removes the rule's taint from servers that no longer match the updated selector.
-
-This gives a clean separation: gate controllers own gating logic; metal-operator owns rule lifecycle and taint GC.
+- Which servers to target (`spec.serverSelector`)
+- Which condition to monitor (`spec.condition.type`)
+- Which taint to manage (`spec.taint`)
+- When to enforce the rule (`spec.enforcement`)
 
 ```yaml
 apiVersion: metal.ironcore.dev/v1alpha1
 kind: ServerReadinessRule
 metadata:
-  name: network-readiness
+  name: disk-sanitization
   finalizers:
     - metal.ironcore.dev/serverreadinessgc
 spec:
   serverSelector:
     matchLabels:
       example.com/hardware-type: server-gen2
-      topology.kubernetes.io/region: region-a
+  enforcement:
+    mode: bootstrap
+    triggers:
+      - creation
+      - maintenance
+  condition:
+    type: DiskSanitized
+  taint:
+    key: metal.ironcore.dev/disk-not-ready
+    effect: NoClaim
+---
+apiVersion: metal.ironcore.dev/v1alpha1
+kind: ServerReadinessRule
+metadata:
+  name: network-topology
+  finalizers:
+    - metal.ironcore.dev/serverreadinessgc
+spec:
+  serverSelector:
+    matchLabels:
+      example.com/hardware-type: server-gen2
+  enforcement:
+    mode: bootstrap
+    triggers:
+      - creation
+      - maintenance
   condition:
     type: NetworkTopologyVerified
-    maxAge: 4h
   taint:
     key: metal.ironcore.dev/network-not-ready
     effect: NoClaim
@@ -146,126 +138,173 @@ spec:
 apiVersion: metal.ironcore.dev/v1alpha1
 kind: ServerReadinessRule
 metadata:
-  name: disk-readiness
+  name: hardware-inventory
   finalizers:
     - metal.ironcore.dev/serverreadinessgc
 spec:
   serverSelector:
     matchLabels:
       example.com/hardware-type: server-gen2
+  enforcement:
+    mode: bootstrap
+    triggers:
+      - creation
   condition:
-    type: DiskSanitized
+    type: HardwareInventoryVerified
   taint:
-    key: metal.ironcore.dev/disk-not-ready
+    key: metal.ironcore.dev/hardware-not-verified
     effect: NoClaim
 ```
 
-The optional `condition.maxAge` field marks a gate as recurring. Metal-operator monitors `lastTransitionTime` on the corresponding server condition and re-applies the gate taint if the condition has been `True` for longer than `maxAge`, signalling the gate controller to re-run. Gate controllers for recurring gates are expected to periodically re-evaluate and re-patch their condition to keep `lastTransitionTime` current. If `maxAge` is absent the gate is treated as one-shot: the condition persists until the gate controller explicitly changes it or a trigger point resets it.
+**Taint key uniqueness** is enforced by a validating admission webhook. On create and update of a `ServerReadinessRule`, the webhook rejects the request if any other rule declares the same `spec.taint.key`. Each taint key must be owned by exactly one rule.
 
-**Taint key uniqueness** is enforced by a validating admission webhook. On create and update of a `ServerReadinessRule`, the webhook lists all existing rules and rejects the request if any other rule declares the same `spec.taint.key`. Each taint key must be owned by exactly one rule.
+**Reserved condition types** are enforced by the same webhook. `ServerReadinessRule` objects whose `spec.condition.type` uses the `metal.ironcore.dev/` prefix are rejected — that namespace is reserved for metal-operator internal conditions.
 
-**Reserved condition types** are also enforced by the same webhook. Metal-operator defines a set of internal condition types (prefixed `metal.ironcore.dev/`). A `ServerReadinessRule` whose `spec.condition.type` matches any reserved internal type is rejected. External gate controllers must use their own unprefixed or distinctly prefixed condition types.
+**Rule lifecycle managed by ReadinessGateController:**
 
-### Lifecycle example
+- At creation, adds `metal.ironcore.dev/serverreadinessgc` as a finalizer.
+- On deletion, removes the rule's taint from all servers that carry it, then releases the finalizer.
+- On `spec.serverSelector` change, removes the rule's taint from servers that no longer match the updated selector.
 
-**Server created, gate controllers apply their taints during Discovery:**
+### Enforcement modes
+
+#### `bootstrap`
+
+The rule is enforced at specific trigger points only. At each listed trigger, the `ReadinessGateController` applies the taint to all matching servers. Once the condition passes and the taint is removed, the controller records completion via annotation and stops enforcing that rule for that server until the next trigger fires.
+
 ```yaml
-# Server
+metadata:
+  annotations:
+    metal.ironcore.dev/bootstrap-completed-disk-sanitization: "true"
+```
+
+If the condition later flips to `False` at runtime, nothing happens — the taint is not re-applied until the next trigger point.
+
+Supported triggers:
+
+| Trigger | When it fires |
+|---|---|
+| `creation` | Server enters Discovery for the first time |
+| `maintenance` | Server exits Maintenance state |
+
+Re-gating on server release (`Reserved` → `Available`) is out of scope for this proposal. It will be addressed by a dedicated server reclaim controller in a follow-up proposal.
+
+#### `continuous`
+
+The rule is always enforced regardless of trigger. If the condition is not satisfied at any point, the `ReadinessGateController` applies the taint immediately. When the condition recovers, the taint is removed. Suitable for checks that must hold throughout the server's lifetime.
+
+### Lifecycle examples
+
+#### Server created
+
+All three rules apply at `creation`. `ReadinessGateController` applies all three taints immediately.
+
+```yaml
+# Server at creation
 metadata:
   name: compute-01
   labels:
     example.com/hardware-type: server-gen2
-    topology.kubernetes.io/region: region-a
-    topology.kubernetes.io/zone: region-a-1
 spec:
   taints:
-    - key: metal.ironcore.dev/not-ready          # set by metal-operator
+    - key: metal.ironcore.dev/disk-not-ready          # applied by ReadinessGateController
       effect: NoClaim
-    - key: metal.ironcore.dev/network-not-ready  # set by network gate controller
+    - key: metal.ironcore.dev/network-not-ready       # applied by ReadinessGateController
       effect: NoClaim
-    - key: metal.ironcore.dev/disk-not-ready     # set by disk gate controller
+    - key: metal.ironcore.dev/hardware-not-verified   # applied by ReadinessGateController
       effect: NoClaim
 status:
-  conditions:
-    - type: NetworkTopologyVerified
-      status: "False"
-      reason: Pending
-      lastTransitionTime: "2026-04-27T10:00:00Z"
-    - type: DiskSanitized
-      status: "False"
-      reason: Pending
-      lastTransitionTime: "2026-04-27T10:00:00Z"
+  conditions: []
 ```
 
-**Disk gate passes — network still pending:**
+Hardware inventory controller runs first and sets its condition `True`. `ReadinessGateController` removes the hardware taint and annotates bootstrap completion.
+
 ```yaml
+metadata:
+  annotations:
+    metal.ironcore.dev/bootstrap-completed-hardware-inventory: "true"
 spec:
   taints:
-    - key: metal.ironcore.dev/not-ready
+    - key: metal.ironcore.dev/disk-not-ready
       effect: NoClaim
     - key: metal.ironcore.dev/network-not-ready
       effect: NoClaim
 status:
   conditions:
-    - type: NetworkTopologyVerified
-      status: "False"
-      reason: TopologyMismatch
-      lastTransitionTime: "2026-04-27T10:01:00Z"
+    - type: HardwareInventoryVerified
+      status: "True"
+      reason: Verified
+      lastTransitionTime: "2026-05-29T10:03:00Z"
+```
+
+Disk sanitization controller sets its condition `True`. `ReadinessGateController` removes the disk taint.
+
+```yaml
+spec:
+  taints:
+    - key: metal.ironcore.dev/network-not-ready
+      effect: NoClaim
+status:
+  conditions:
+    - type: HardwareInventoryVerified
+      status: "True"
+      reason: Verified
+      lastTransitionTime: "2026-05-29T10:03:00Z"
     - type: DiskSanitized
       status: "True"
       reason: Sanitized
-      lastTransitionTime: "2026-04-27T10:05:00Z"
+      lastTransitionTime: "2026-05-29T10:05:00Z"
 ```
 
-**All gates pass — metal-operator removes bootstrap taint, server claimable:**
+Network topology controller sets its condition `True`. `ReadinessGateController` removes the last taint. Server is claimable.
+
 ```yaml
+metadata:
+  annotations:
+    metal.ironcore.dev/bootstrap-completed-hardware-inventory: "true"
+    metal.ironcore.dev/bootstrap-completed-disk-sanitization: "true"
+    metal.ironcore.dev/bootstrap-completed-network-topology: "true"
 spec:
   taints: []
 status:
   conditions:
-    - type: NetworkTopologyVerified
+    - type: HardwareInventoryVerified
       status: "True"
-      reason: TopologyMatch
-      lastTransitionTime: "2026-04-27T10:12:00Z"
+      reason: Verified
+      lastTransitionTime: "2026-05-29T10:03:00Z"
     - type: DiskSanitized
       status: "True"
       reason: Sanitized
-      lastTransitionTime: "2026-04-27T10:05:00Z"
+      lastTransitionTime: "2026-05-29T10:05:00Z"
+    - type: NetworkTopologyVerified
+      status: "True"
+      reason: TopologyMatch
+      lastTransitionTime: "2026-05-29T10:12:00Z"
 ```
 
-### Re-gating
+#### Server transitions from `Reserved` to `Available`
 
-At each trigger point metal-operator re-sets the bootstrap taint with the corresponding trigger value. All gate controllers matching the server re-apply their gate taint and re-evaluate from scratch. Gate controllers may inspect the taint value to fast-forward checks where appropriate.
+Re-gating on server release is handled by a dedicated server reclaim controller, which will be described in a follow-up proposal.
 
 ### Observability
 
 Metal-operator exposes a per-server metric — one time series per server/taint combination, value `1` while active:
 
 ```
-metaloperator_server_noclaim_taint{server="compute-01", namespace="default", taint="metal.ironcore.dev/not-ready"} 1
-metaloperator_server_noclaim_taint{server="compute-01", namespace="default", taint="metal.ironcore.dev/network-not-ready"} 1
+metaloperator_server_noclaim_taint{server="compute-01", taint="metal.ironcore.dev/disk-not-ready"} 1
 ```
 
-Aggregate counts can be derived via PromQL:
-
-```promql
-count by (taint) (metaloperator_server_noclaim_taint)
-```
-
-Gate controller conditions on `Server.status.conditions` include `lastTransitionTime`. Operators can alert on conditions that have remained `False` beyond a deployment-specific threshold (e.g. 2 hours) using a `kube_customresource_status_condition` query. A condition stuck `False` means the gate controller has not cleared it — either the check is genuinely failing or the gate controller has crashed. In either case the server correctly remains gated; the alert surfaces which servers need attention.
+Additional metrics may be added as the implementation matures.
 
 ## Dependencies
 
 | Responsibility | Owner |
 |---|---|
-| Bootstrap taint (set/remove) | metal-operator |
-| Gating logic (apply/remove gate taint, report condition) | Gate controller |
-| Rule lifecycle (finalizer, taint GC on deletion/selector change) | metal-operator |
-
-- **metal-operator**: bootstrap taint management, `ServerReadinessRule` finalizer and taint GC
-- **ironcore-dev/metal-operator#672**: Server taints
+| Taint add/remove | ReadinessGateController (metal-operator) |
+| Rule lifecycle (finalizer, taint GC) | ReadinessGateController (metal-operator) |
+| Condition reporting | Any entity with write access to `Server.status.conditions` |
 
 ## Related
 
 - ironcore-dev/enhancements#11 — original issue
-- ironcore-dev/metal-operator#672 — Server taints
+- ironcore-dev/metal-operator#878 — Server taints
