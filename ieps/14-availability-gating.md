@@ -43,7 +43,7 @@ Introduce a generic availability gating mechanism that prevents servers from bei
 
 Servers entering the fleet may fail pre-availability checks (e.g. physical wiring, unclean disks). Without a gating mechanism, a server can reach `Available` state and get claimed before these checks pass, leading to issues at workload runtime.
 
-The driving use cases are network topology verification (an external controller compares discovered interface data against an authoritative source) and disk sanitization (prior workload data must be wiped before the server is re-claimable). Other gate types follow the same pattern without requiring changes to metal-operator.
+Other gate types follow the same pattern without requiring changes to metal-operator.
 
 ### Goals
 
@@ -77,7 +77,7 @@ This makes a `Server` unclaimable to `ServerClaim`s that don't have the required
 The `ReadinessGateController` runs inside metal-operator and:
 
 - Watches all `ServerReadinessRule` objects and all `Server` objects
-- At each trigger point, evaluates which rules match a server and applies the corresponding taints
+- When a server matches a rule and the condition is not satisfied, applies the corresponding taint
 - Watches `Server.status.conditions` and removes a taint when its condition is satisfied
 - Manages rule lifecycle: adds a finalizer at rule creation, removes orphaned taints on rule deletion or selector change
 
@@ -90,13 +90,13 @@ A `ServerReadinessRule` is a cluster-scoped resource that declares:
 - Which servers to target (`spec.serverSelector`)
 - Which condition to monitor (`spec.condition.type`)
 - Which taint to manage (`spec.taint`)
-- When to enforce the rule (`spec.enforcement`)
+- How to enforce the rule (`spec.enforcement.mode`)
 
 ```yaml
 apiVersion: metal.ironcore.dev/v1alpha1
 kind: ServerReadinessRule
 metadata:
-  name: disk-sanitization
+  name: example-one-shot
   finalizers:
     - metal.ironcore.dev/serverreadinessgc
 spec:
@@ -105,19 +105,16 @@ spec:
       example.com/hardware-type: server-gen2
   enforcement:
     mode: bootstrap
-    triggers:
-      - creation
-      - maintenance
   condition:
-    type: DiskSanitized
+    type: ExampleCondition
   taint:
-    key: metal.ironcore.dev/disk-not-ready
+    key: metal.ironcore.dev/example-not-ready
     effect: NoClaim
 ---
 apiVersion: metal.ironcore.dev/v1alpha1
 kind: ServerReadinessRule
 metadata:
-  name: network-topology
+  name: example-continuous
   finalizers:
     - metal.ironcore.dev/serverreadinessgc
 spec:
@@ -125,34 +122,11 @@ spec:
     matchLabels:
       example.com/hardware-type: server-gen2
   enforcement:
-    mode: bootstrap
-    triggers:
-      - creation
-      - maintenance
+    mode: continuous
   condition:
-    type: NetworkTopologyVerified
+    type: ExampleContinuousCondition
   taint:
-    key: metal.ironcore.dev/network-not-ready
-    effect: NoClaim
----
-apiVersion: metal.ironcore.dev/v1alpha1
-kind: ServerReadinessRule
-metadata:
-  name: hardware-inventory
-  finalizers:
-    - metal.ironcore.dev/serverreadinessgc
-spec:
-  serverSelector:
-    matchLabels:
-      example.com/hardware-type: server-gen2
-  enforcement:
-    mode: bootstrap
-    triggers:
-      - creation
-  condition:
-    type: HardwareInventoryVerified
-  taint:
-    key: metal.ironcore.dev/hardware-not-verified
+    key: metal.ironcore.dev/example-continuous-not-ready
     effect: NoClaim
 ```
 
@@ -170,34 +144,25 @@ spec:
 
 #### `bootstrap`
 
-The rule is enforced at specific trigger points only. At each listed trigger, the `ReadinessGateController` applies the taint to all matching servers. Once the condition passes and the taint is removed, the controller records completion via annotation and stops enforcing that rule for that server until the next trigger fires.
+The rule is enforced once per server. When a server first matches the rule and the condition is not satisfied, the `ReadinessGateController` applies the taint. Once the condition passes and the taint is removed, the controller records completion via annotation and stops enforcing that rule for that server.
 
 ```yaml
 metadata:
   annotations:
-    metal.ironcore.dev/bootstrap-completed-disk-sanitization: "true"
+    metal.ironcore.dev/bootstrap-completed-example-one-shot: "true"
 ```
 
-If the condition later flips to `False` at runtime, nothing happens — the taint is not re-applied until the next trigger point.
-
-Supported triggers:
-
-| Trigger | When it fires |
-|---|---|
-| `creation` | Server enters Discovery for the first time |
-| `maintenance` | Server exits Maintenance state |
-
-Re-gating on server release (`Reserved` → `Available`) is out of scope for this proposal. It will be addressed by a dedicated server reclaim controller in a follow-up proposal.
+If the condition later flips to `False` at runtime, nothing happens — the taint is not re-applied. Re-gating can be triggered externally by clearing the completion annotation, at which point the controller picks up the server again on its next reconcile.
 
 #### `continuous`
 
-The rule is always enforced regardless of trigger. If the condition is not satisfied at any point, the `ReadinessGateController` applies the taint immediately. When the condition recovers, the taint is removed. Suitable for checks that must hold throughout the server's lifetime.
+The rule is always enforced. If the condition is not satisfied at any point, the `ReadinessGateController` applies the taint immediately. When the condition recovers, the taint is removed. Suitable for checks that must hold throughout the server's lifetime.
 
 ### Lifecycle examples
 
-#### Server created
+#### Server created — bootstrap rule
 
-All three rules apply at `creation`. `ReadinessGateController` applies all three taints immediately.
+The server matches the rule. The condition is absent — `ReadinessGateController` applies the taint.
 
 ```yaml
 # Server at creation
@@ -207,84 +172,70 @@ metadata:
     example.com/hardware-type: server-gen2
 spec:
   taints:
-    - key: metal.ironcore.dev/disk-not-ready          # applied by ReadinessGateController
-      effect: NoClaim
-    - key: metal.ironcore.dev/network-not-ready       # applied by ReadinessGateController
-      effect: NoClaim
-    - key: metal.ironcore.dev/hardware-not-verified   # applied by ReadinessGateController
+    - key: metal.ironcore.dev/example-not-ready    # applied by ReadinessGateController
       effect: NoClaim
 status:
   conditions: []
 ```
 
-Hardware inventory controller runs first and sets its condition `True`. `ReadinessGateController` removes the hardware taint and annotates bootstrap completion.
+An external entity sets the condition to `True`. `ReadinessGateController` removes the taint and records bootstrap completion.
 
 ```yaml
 metadata:
   annotations:
-    metal.ironcore.dev/bootstrap-completed-hardware-inventory: "true"
-spec:
-  taints:
-    - key: metal.ironcore.dev/disk-not-ready
-      effect: NoClaim
-    - key: metal.ironcore.dev/network-not-ready
-      effect: NoClaim
-status:
-  conditions:
-    - type: HardwareInventoryVerified
-      status: "True"
-      reason: Verified
-      lastTransitionTime: "2026-05-29T10:03:00Z"
-```
-
-Disk sanitization controller sets its condition `True`. `ReadinessGateController` removes the disk taint.
-
-```yaml
-spec:
-  taints:
-    - key: metal.ironcore.dev/network-not-ready
-      effect: NoClaim
-status:
-  conditions:
-    - type: HardwareInventoryVerified
-      status: "True"
-      reason: Verified
-      lastTransitionTime: "2026-05-29T10:03:00Z"
-    - type: DiskSanitized
-      status: "True"
-      reason: Sanitized
-      lastTransitionTime: "2026-05-29T10:05:00Z"
-```
-
-Network topology controller sets its condition `True`. `ReadinessGateController` removes the last taint. Server is claimable.
-
-```yaml
-metadata:
-  annotations:
-    metal.ironcore.dev/bootstrap-completed-hardware-inventory: "true"
-    metal.ironcore.dev/bootstrap-completed-disk-sanitization: "true"
-    metal.ironcore.dev/bootstrap-completed-network-topology: "true"
+    metal.ironcore.dev/bootstrap-completed-example-one-shot: "true"
 spec:
   taints: []
 status:
   conditions:
-    - type: HardwareInventoryVerified
+    - type: ExampleCondition
       status: "True"
-      reason: Verified
-      lastTransitionTime: "2026-05-29T10:03:00Z"
-    - type: DiskSanitized
-      status: "True"
-      reason: Sanitized
+      reason: Passed
       lastTransitionTime: "2026-05-29T10:05:00Z"
-    - type: NetworkTopologyVerified
+```
+
+The server is claimable. The completion annotation prevents the taint from being re-applied even if the condition later flips to `False`.
+
+#### Server created — continuous rule
+
+The server matches the rule. The condition is absent — `ReadinessGateController` applies the taint.
+
+```yaml
+spec:
+  taints:
+    - key: metal.ironcore.dev/example-continuous-not-ready    # applied by ReadinessGateController
+      effect: NoClaim
+status:
+  conditions: []
+```
+
+An external entity sets the condition to `True`. `ReadinessGateController` removes the taint. Server is claimable.
+
+```yaml
+spec:
+  taints: []
+status:
+  conditions:
+    - type: ExampleContinuousCondition
       status: "True"
-      reason: TopologyMatch
+      reason: Passed
       lastTransitionTime: "2026-05-29T10:12:00Z"
 ```
 
-#### Server transitions from `Reserved` to `Available`
+The condition later flips to `False`. `ReadinessGateController` re-applies the taint immediately.
 
-Re-gating on server release is handled by a dedicated server reclaim controller, which will be described in a follow-up proposal.
+```yaml
+spec:
+  taints:
+    - key: metal.ironcore.dev/example-continuous-not-ready
+      effect: NoClaim
+status:
+  conditions:
+    - type: ExampleContinuousCondition
+      status: "False"
+      reason: Failed
+      lastTransitionTime: "2026-05-29T14:00:00Z"
+```
 
 ### Observability
 
