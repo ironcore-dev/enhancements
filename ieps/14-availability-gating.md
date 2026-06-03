@@ -8,13 +8,10 @@ creation-date: 2026-04-27
 status: implementable
 
 authors:
-
-- "@xkonni"
+  - '@xkonni'
 
 reviewers:
-
-- "@ironcore-dev/metal-operator-maintainers"
-
+  - '@ironcore-dev/metal-operator-maintainers'
 ---
 
 # IEP-0014: Availability Gating for IronCore Servers
@@ -23,15 +20,14 @@ reviewers:
 
 - [Summary](#summary)
 - [Motivation](#motivation)
-    - [Goals](#goals)
-    - [Non-Goals](#non-goals)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-    - [Overview](#overview)
-    - [ReadinessGateController](#readinessgatecontroller)
-    - [ServerReadinessRule CRD](#serverreadinessrule-crd)
-    - [Enforcement modes](#enforcement-modes)
-    - [Lifecycle examples](#lifecycle-examples)
-    - [Observability](#observability)
+  - [Overview](#overview)
+  - [ReadinessGateController](#readinessgatecontroller)
+  - [ServerReadinessRule CRD](#serverreadinessrule-crd)
+  - [Enforcement modes](#enforcement-modes)
+  - [Lifecycle examples](#lifecycle-examples)
 - [Dependencies](#dependencies)
 - [Related](#related)
 
@@ -57,7 +53,7 @@ Other gate types follow the same pattern without requiring changes to metal-oper
 
 - Defining the logic run by individual external controllers
 - Replacing existing maintenance workflows
-- Automatic timeout or force-removal of taints for stuck gates — operators should alert on long-gated servers via the provided metrics
+- Automatic timeout or force-removal of taints for stuck gates
 - Eviction of already-reserved servers based on gate state
 
 ## Proposal
@@ -132,8 +128,6 @@ spec:
 
 **Taint key uniqueness** is enforced by a validating admission webhook. On create and update of a `ServerReadinessRule`, the webhook rejects the request if any other rule declares the same `spec.taint.key`. Each taint key must be owned by exactly one rule.
 
-**Reserved condition types** are enforced by the same webhook. `ServerReadinessRule` objects whose `spec.condition.type` uses the `metal.ironcore.dev/` prefix are rejected — that namespace is reserved for metal-operator internal conditions.
-
 **Rule lifecycle managed by ReadinessGateController:**
 
 - At creation, adds `metal.ironcore.dev/serverreadinessgc` as a finalizer.
@@ -149,7 +143,7 @@ The rule is enforced once per server. When a server first matches the rule and t
 ```yaml
 metadata:
   annotations:
-    metal.ironcore.dev/bootstrap-completed-example-one-shot: "true"
+    metal.ironcore.dev/bootstrap-completed-example-one-shot: 'true'
 ```
 
 If the condition later flips to `False` at runtime, nothing happens — the taint is not re-applied. Re-gating can be triggered externally by clearing the completion annotation, at which point the controller picks up the server again on its next reconcile.
@@ -172,7 +166,7 @@ metadata:
     example.com/hardware-type: server-gen2
 spec:
   taints:
-    - key: metal.ironcore.dev/example-not-ready    # applied by ReadinessGateController
+    - key: metal.ironcore.dev/example-not-ready # applied by ReadinessGateController
       effect: NoClaim
 status:
   conditions: []
@@ -183,15 +177,15 @@ An external entity sets the condition to `True`. `ReadinessGateController` remov
 ```yaml
 metadata:
   annotations:
-    metal.ironcore.dev/bootstrap-completed-example-one-shot: "true"
+    metal.ironcore.dev/bootstrap-completed-example-one-shot: 'true'
 spec:
   taints: []
 status:
   conditions:
     - type: ExampleCondition
-      status: "True"
+      status: 'True'
       reason: Passed
-      lastTransitionTime: "2026-05-29T10:05:00Z"
+      lastTransitionTime: '2026-05-29T10:05:00Z'
 ```
 
 The server is claimable. The completion annotation prevents the taint from being re-applied even if the condition later flips to `False`.
@@ -203,7 +197,7 @@ The server matches the rule. The condition is absent — `ReadinessGateControlle
 ```yaml
 spec:
   taints:
-    - key: metal.ironcore.dev/example-continuous-not-ready    # applied by ReadinessGateController
+    - key: metal.ironcore.dev/example-continuous-not-ready # applied by ReadinessGateController
       effect: NoClaim
 status:
   conditions: []
@@ -217,9 +211,9 @@ spec:
 status:
   conditions:
     - type: ExampleContinuousCondition
-      status: "True"
+      status: 'True'
       reason: Passed
-      lastTransitionTime: "2026-05-29T10:12:00Z"
+      lastTransitionTime: '2026-05-29T10:12:00Z'
 ```
 
 The condition later flips to `False`. `ReadinessGateController` re-applies the taint immediately.
@@ -232,28 +226,18 @@ spec:
 status:
   conditions:
     - type: ExampleContinuousCondition
-      status: "False"
+      status: 'False'
       reason: Failed
-      lastTransitionTime: "2026-05-29T14:00:00Z"
+      lastTransitionTime: '2026-05-29T14:00:00Z'
 ```
-
-### Observability
-
-Metal-operator exposes a per-server metric — one time series per server/taint combination, value `1` while active:
-
-```
-metaloperator_server_noclaim_taint{server="compute-01", taint="metal.ironcore.dev/disk-not-ready"} 1
-```
-
-Additional metrics may be added as the implementation matures.
 
 ## Dependencies
 
-| Responsibility | Owner |
-|---|---|
-| Taint add/remove | ReadinessGateController (metal-operator) |
-| Rule lifecycle (finalizer, taint GC) | ReadinessGateController (metal-operator) |
-| Condition reporting | Any entity with write access to `Server.status.conditions` |
+| Responsibility                       | Owner                                                      |
+| ------------------------------------ | ---------------------------------------------------------- |
+| Taint add/remove                     | ReadinessGateController (metal-operator)                   |
+| Rule lifecycle (finalizer, taint GC) | ReadinessGateController (metal-operator)                   |
+| Condition reporting                  | Any entity with write access to `Server.status.conditions` |
 
 ## Related
 
