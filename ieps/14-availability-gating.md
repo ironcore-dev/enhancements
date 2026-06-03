@@ -84,9 +84,9 @@ Any entity with the appropriate permissions can write conditions on `Server.stat
 A `ServerReadinessRule` is a cluster-scoped resource that declares:
 
 - Which servers to target (`spec.serverSelector`)
-- Which condition to monitor (`spec.condition.type`)
+- Which condition to monitor (`spec.conditions[*].type` + `spec.conditions[*].status`)
 - Which taint to manage (`spec.taint`)
-- How to enforce the rule (`spec.enforcement.mode`)
+- How to enforce the rule (`spec.enforcementMode`)
 
 ```yaml
 apiVersion: metal.ironcore.dev/v1alpha1
@@ -99,10 +99,10 @@ spec:
   serverSelector:
     matchLabels:
       example.com/hardware-type: server-gen2
-  enforcement:
-    mode: bootstrap
-  condition:
-    type: ExampleCondition
+  enforcementMode: BootstrapOnly
+  conditions:
+  - type: ExampleCondition
+    status: True
   taint:
     key: metal.ironcore.dev/example-not-ready
     effect: NoClaim
@@ -117,10 +117,10 @@ spec:
   serverSelector:
     matchLabels:
       example.com/hardware-type: server-gen2
-  enforcement:
-    mode: continuous
-  condition:
-    type: ExampleContinuousCondition
+  enforcementMode: Continuous
+  conditions:
+  - type: ExampleContinuousCondition
+    status: True
   taint:
     key: metal.ironcore.dev/example-continuous-not-ready
     effect: NoClaim
@@ -136,7 +136,7 @@ spec:
 
 ### Enforcement modes
 
-#### `bootstrap`
+#### `BootstrapOnly`
 
 The rule is enforced once per server. When a server first matches the rule and the condition is not satisfied, the `ReadinessGateController` applies the taint. Once the condition passes and the taint is removed, the controller records completion via annotation and stops enforcing that rule for that server.
 
@@ -148,7 +148,7 @@ metadata:
 
 If the condition later flips to `False` at runtime, nothing happens — the taint is not re-applied. Re-gating can be triggered externally by clearing the completion annotation, at which point the controller picks up the server again on its next reconcile.
 
-#### `continuous`
+#### `Continuous`
 
 The rule is always enforced. If the condition is not satisfied at any point, the `ReadinessGateController` applies the taint immediately. When the condition recovers, the taint is removed. Suitable for checks that must hold throughout the server's lifetime.
 
