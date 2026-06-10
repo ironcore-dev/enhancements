@@ -164,25 +164,10 @@ type ServerSpec struct {
 }
 ```
 
-#### BootMethod
-
-New. In addition to the type, metal-operator will have a global flag to set the
-default, the flag itself will default to `PXE`.
-
-```go
-type BootMethod string
-
-const (
-	BootMethodHTTP = "HTTP"
-	BootMethodPXE = "PXE"
-)
-```
-
 #### ServerClaimSpec
 
 Add:
 * `Tolerations`
-* `BootMethod`
 
 
 ```go
@@ -215,16 +200,13 @@ type ServerClaimSpec struct {
 	// Tolerations control whether this claim can be bound to a server that is
 	// tainted in a certain way.
 	Tolerations []Toleration `json:"tolerations,omitempty"`
-
-	// BootMethod configures via which method the server is booted.
-	BootMethod BootMethod `json:"bootMethod,omitempty"`
 }
 ```
 
 #### ServerClaimStatus
 
 Add:
-* `ImageURL`
+* `Conditions`
 
 ```go
 type ServerClaimStatus struct {
@@ -232,20 +214,18 @@ type ServerClaimStatus struct {
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
 
-	// ImageURL is the digest-pinned OCI image reference resolved from the
-	// user-provided image. It contains the necessary artifacts for the
-	// specified boot method as layers in the IronCore format.
-	ImageURL string `json:"imageURL,omitempty"`
+	// Conditions report the current observations of the claim, such as
+	// failures encountered while pulling or booting the configured image.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 ```
 
 #### Phase
 
-Add:
-* `Initial`
-* `Ready`
-* `Invalid`
-* `Evicted`
+Modeled after the pod lifecycle: a claim is either `Pending` (created but not
+yet bound to a server) or `Bound` (bound to a server). All other observations
+about the claim, including failures, are surfaced via conditions.
 
 Remove:
 * `Unbound`
@@ -254,20 +234,11 @@ Remove:
 type Phase string
 
 const (
-	// PhaseInitial indicates that the server claim was just created and is not
-	// yet ready to be bound.
-	PhaseInitial Phase = "Initial"
-	// PhaseReady indicates that the server claim is ready to be bound to a
-	// server.
-	PhaseReady Phase = "Ready"
-	// PhaseInvalid indicates that the server claim failed validation checks and
-	// cannot be bound to a server.
-	PhaseInvalid Phase = "Invalid"
+	// PhasePending indicates that the server claim has been created but is
+	// not yet bound to a server.
+	PhasePending Phase = "Pending"
 	// PhaseBound indicates that the server claim is bound to a server.
 	PhaseBound Phase = "Bound"
-	// PhaseEvicted indicates the server was forcefully evicted and cannot be
-	// re-bound.
-	PhaseEvicted Phase = "Evicted"
 )
 ```
 
@@ -282,38 +253,31 @@ toleration. The expectation is that the manager of that claim prepares to
 release the server eventually.
 
 The `Evict` effect forcefully removes any bound claim that does not tolerate it.
-This is done by metal-operator as soon as the taint is picked up by removing the
-claim reference on the server, setting it back to available, and putting the
-claim into the `Evicted` phase with an event that it was evicted by a taint. It
-is the responsibility of the claim owner to react to such an event and re-create
-the claim as necessary. The `Evict` taint implies the `NoBind` effect.
+This is done by metal-operator as soon as the taint is picked up by deleting
+the offending claim and clearing the claim reference on the server, returning
+it to available. It is the responsibility of the claim owner to observe the
+deletion and re-create the claim as necessary. The `Evict` taint implies the
+`NoBind` effect.
 
 ### Claim Flow
 
 To claim a server, a `ServerClaim` must be created. The claim contains a URL to
 an IronCore compliant OCI image or manifest. A new claim starts out in the
-`Initial` phase, when it is first picked up by metal-operator it verifies the
-information provided by the creator is correct.
+`Pending` phase.
 
-To do so it resolves the provided URL and resolves any manifests to ensure that
-it contains the necessary artifacts for the given boot method. Once it gathered
-this information it places the URL of the specific OCI image into the status
-`ImageURL` field using the digest of the image to record what the tag resolved
-to when it was checked and ensure the boot process uses the same image. The
-claim transitions to the `Ready` phase and can now be bound. If the image does
-not contain the necessary artifacts, e.g. not an IronCore image or only contains
-PXE artifacts, but claim specifies HTTP, it enters the `Invalid` phase.
+To bind a claim to a server, metal-operator checks the taints and tolerations
+to select suitable servers for a claim. Once a match is found the claim is
+bound to the server, the server transitions to the `Reserved` state, and the
+claim moves to `Bound`. metal-operator then configures the server and turns it
+on.
 
-To bind a claim to a server, metal-operator checks the taints and tolerations to
-select suitable servers for a claim. Once a match is found the claim is bound to
-the server and the server transitions to the `Reserved` state while the claim
-becomes `Bound`.
-
-Depending on the boot method given in the claim metal-operator configures the
-server and turns it on. The boot procedure for PXE remains as it is today. For
-HTTP booting the metal-operator sets PXE boot as well but the DHCP server must
-be configured to only reply to PXE or HTTP boot requests depending on how the
-claim is configured.
+The image is not validated up-front; the actual pulling and verification
+happens later as part of the boot process, similar to how a kubelet pulls a
+container image only when starting a pod. If the pull fails — for example
+because the image cannot be retrieved or is not in the expected format — the
+component responsible for the pull surfaces this on the claim via a condition.
+The exact mechanism for reporting such failures is out of scope for this
+proposal.
 
 ### Onboarding Flow
 
@@ -349,9 +313,9 @@ as a separate component with boot-operator becoming deprecated.
 #### 1. Adjust Workload Managers
 
 Components which manage server claims need to be adjusted to support a claim
-which has been forcefully evicted. They should consider an evicted claim as
-something that needs to be cleaned up and, if it is still needed, should be
-re-created.
+which has been forcefully evicted. Since eviction deletes the claim, workload
+managers should treat the disappearance of a claim they own as a signal that
+the claim was evicted and, if it is still needed, recreate it.
 
 Any server which they have a claim bound to should be monitored for taints. If a
 taint appears the workload manager should make an effort to unbind the claim
@@ -360,14 +324,11 @@ unless the claim explicitly tolerates the taint.
 #### 2. Add New API Components and Deprecate Old Fields
 
 * Add taints & tolerations.
-* New claim phases.
-* Add boot method to claim spec.
-* Add image URL field to claim status.
+* Replace existing claim phases with `Pending` / `Bound`.
+* Add conditions to claim status.
 
 Together with the API changes metal-operator will start to honor taints in
-addition to the existing logic for maintenances. With the addition
-of the new claim phases metal-operator will also start validating the provided
-OCI URL to ensure it's valid.
+addition to the existing logic for maintenances.
 
 #### 3. Migrate Discovery Flow
 
