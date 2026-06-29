@@ -72,13 +72,14 @@ Key differences from Kubernetes:
 - Kubernetes also has kubelet-initiated eviction: when a node runs low on resources (memory, disk, PIDs), the kubelet kills pods locally and marks them as `Failed` with reason `Evicted`. This is a separate mechanism from taint-based eviction. The kubelet acts autonomously without the control plane issuing a DELETE. Resource pressure eviction is explicitly out of scope for this IEP.
 
 ref: [kubernetes taint eviction](https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/tainteviction/taint_eviction.go#L147)
+
 ### API Changes
 
 Extend the `TaintEffect` type in `api/common/v1alpha1/common_types.go`:
 
 ```go
 const (
-    TaintEffectNoSchedule TaintEffect = "NoSchedule"
+    TaintEffectNoSchedule TaintEffect = "NoSchedule"  (already present)
     TaintEffectNoExecute  TaintEffect = "NoExecute"
 )
 ```
@@ -104,7 +105,7 @@ This finalizer ensures the object is not removed until the poollet confirms the 
 2. Taint eviction controller: DELETE Machine 
 3. Machine gets deletionTimestamp (finalizer blocks removal)
 4. Poollet reconciles machine
-   1. calls provider and deletes machine
+   1. Calls provider and deletes machine
    2. Removes finalizer
 5. API server removes object
 
