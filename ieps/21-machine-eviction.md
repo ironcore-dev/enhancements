@@ -1,5 +1,5 @@
 ---
-title: MachinePool Eviction
+title: Machine Eviction
 
 iep-number: 21
 
@@ -15,10 +15,11 @@ reviewers:
 
 - "@friegger"
 - "@gonzolino"
+- "@afritzler"
 
 ---
 
-# IEP-21: MachinePool Eviction
+# IEP-21: Machine Eviction
 
 ## Table of Contents
 
@@ -40,7 +41,7 @@ The provider handles graceful VM shutdown via its existing finalizer before the 
 
 ## Motivation
 
-Currently, when a bare-metal host backing a `MachinePool` needs maintenance, there is no way to signal this. The host gets shut down, VMs and workloads are killed, while the `Machine` objects in the API still appear as running.
+Currently, when a server backing a `MachinePool` needs maintenance, there is no way to signal this. The host gets shut down, VMs and workloads are killed, while the `Machine` objects in the API still appear as running.
 
 There is no mechanism to gracefully shut down VMs in an ordered fashion before the host goes down.
 
@@ -52,7 +53,7 @@ There is no mechanism to gracefully shut down VMs in an ordered fashion before t
 
 * Handle the unplanned failure case: when a pool becomes unhealthy (IEP-15 marks it `Ready=Unknown`), automatically evict machines after a configurable threshold.
 * Drain orchestration (serial eviction, disruption budgets). Drain is a usage pattern on top: cordon (`NoSchedule`), then evict (`NoExecute`).
-* Automatic rescheduling of evicted machines. `machinePoolRef` is immutable: Recreating a Machine on another pool requires a higher-level controller (or Gardener) which is out of scope.
+* Automatic rescheduling of evicted machines. `machinePoolRef` is immutable: Recreating a Machine on another pool requires an external orchestrator which is out of scope.
 * Toleration-based selective eviction. `NoExecute` evicts all machines unconditionally.
 * Live migration of VMs between pools.
 * Resource pressure eviction.
@@ -67,8 +68,8 @@ In Kubernetes, when a `NoExecute` taint is added to a Node, the taint eviction c
 This IEP applies the same pattern to IronCore: a taint eviction controller deletes `Machine` objects when a `NoExecute` taint is set on a `MachinePool`. The poollet sees the `deletionTimestamp`, calls the provider to shut down the VM, and removes its finalizer to release the object.
 
 Key differences from Kubernetes:
-- No toleration matching: `NoExecute` evicts all machines unconditionally.
-- Rescheduling is not built-in. Kubernetes has Deployments/ReplicaSets that recreate deleted Pods. IronCore does not yet have an equivalent higher-level controller.
+- No toleration matching: `NoExecute` evicts all machines unconditionally. In Kubernetes, a Pod that tolerates the `NoExecute` taint is retained (indefinitely, or for `tolerationSeconds` if set). IronCore does not honor tolerations for now.
+- Rescheduling is not built-in. Kubernetes has Deployments/ReplicaSets that recreate deleted Pods. IronCore does not yet provide an equivalent layer for recreating evicted Machines.
 - Kubernetes also has kubelet-initiated eviction: when a node runs low on resources (memory, disk, PIDs), the kubelet kills pods locally and marks them as `Failed` with reason `Evicted`. This is a separate mechanism from taint-based eviction. The kubelet acts autonomously without the control plane issuing a DELETE. Resource pressure eviction is explicitly out of scope for this IEP.
 
 ref: [kubernetes taint eviction](https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/tainteviction/taint_eviction.go#L147)
