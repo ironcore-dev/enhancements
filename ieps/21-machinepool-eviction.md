@@ -5,7 +5,7 @@ iep-number: 21
 
 creation-date: 2026-06-24
 
-status: draft
+status: implementable
 
 authors:
 
@@ -13,8 +13,8 @@ authors:
 
 reviewers:
 
-- "@main-reviewer-1"
-- "@main-reviewer-2"
+- "@friegger"
+- "@gonzolino"
 
 ---
 
