@@ -36,7 +36,7 @@ reviewers:
 
 This IEP defines how `Machines` are evicted from a MachinePool.
 
-We introduce a `NoExecute` taint effect. When set on a `MachinePool`, a taint eviction controller issues DELETE on all bound `Machine`s. 
+We introduce a `NoExecute` taint effect. When set on a `MachinePool`, a taint eviction controller issues DELETE on every bound `Machine` that does not tolerate the taint. 
 The provider handles graceful VM shutdown via its existing finalizer before the object is fully removed.
 
 ## Motivation
@@ -47,14 +47,13 @@ There is no mechanism to gracefully shut down VMs in an ordered fashion before t
 
 ### Goals
 
-* Introduce `NoExecute` taint for the `MachinePool` that triggers deletion of all bound `Machine`s.
+* Introduce `NoExecute` taint for the `MachinePool` that triggers deletion of all bound `Machine`s that do not tolerate the taint.
 
 ### Non-Goals
 
 * Handle the unplanned failure case: when a pool becomes unhealthy (IEP-15 marks it `Ready=Unknown`), automatically evict machines after a configurable threshold.
 * Drain orchestration (serial eviction, disruption budgets). Drain is a usage pattern on top: cordon (`NoSchedule`), then evict (`NoExecute`).
 * Automatic rescheduling of evicted machines. `machinePoolRef` is immutable: Recreating a Machine on another pool requires an external orchestrator which is out of scope.
-* Toleration-based selective eviction. `NoExecute` evicts all machines unconditionally.
 * Live migration of VMs between pools.
 * Resource pressure eviction.
 * Volume and NetworkInterface lifecycle on eviction. These follow existing ownership semantics and are not changed by this IEP.
@@ -68,7 +67,6 @@ In Kubernetes, when a `NoExecute` taint is added to a Node, the taint eviction c
 This IEP applies the same pattern to IronCore: a taint eviction controller deletes `Machine` objects when a `NoExecute` taint is set on a `MachinePool`. The poollet sees the `deletionTimestamp`, calls the provider to shut down the VM, and removes its finalizer to release the object.
 
 Key differences from Kubernetes:
-- No toleration matching: `NoExecute` evicts all machines unconditionally. In Kubernetes, a Pod that tolerates the `NoExecute` taint is retained (indefinitely, or for `tolerationSeconds` if set). IronCore does not honor tolerations for now.
 - Rescheduling is not built-in. Kubernetes has Deployments/ReplicaSets that recreate deleted Pods. IronCore does not yet provide an equivalent layer for recreating evicted Machines.
 - Kubernetes also has kubelet-initiated eviction: when a node runs low on resources (memory, disk, PIDs), the kubelet kills pods locally and marks them as `Failed` with reason `Evicted`. This is a separate mechanism from taint-based eviction. The kubelet acts autonomously without the control plane issuing a DELETE. Resource pressure eviction is explicitly out of scope for this IEP.
 
@@ -86,11 +84,11 @@ const (
 ```
 
 `NoSchedule` prevents new machines from being scheduled.
-`NoExecute` additionally signals that all machines on the pool must be deleted.
+`NoExecute` additionally signals that machines on the pool must be deleted unless they tolerate the taint.
 
 ### Eviction Flow
 
-A new **taint eviction controller** watches `MachinePool` taint changes. When a `NoExecute` taint is added, it issues DELETE on all `Machine`s bound to that pool.
+A new **taint eviction controller** watches `MachinePool` taint changes. When a `NoExecute` taint is added, it issues DELETE on every `Machine` bound to that pool that does not have a matching toleration. A `Machine` tolerates the taint if its `spec.tolerations` contains an entry matching the taint's `key`, `value`, and `effect`; tolerating machines are retained.
 
 The poollet already sets a finalizer on every Machine:
 
@@ -103,7 +101,7 @@ metadata:
 This finalizer ensures the object is not removed until the poollet confirms the VM is shut down.
 
 1. NoExecute taint added to MachinePool
-2. Taint eviction controller: DELETE Machine 
+2. Taint eviction controller: DELETE Machine if it has no matching toleration
 3. Machine gets deletionTimestamp (finalizer blocks removal)
 4. Poollet reconciles machine
    1. Calls provider and deletes machine
