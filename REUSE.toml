@@ -7,6 +7,7 @@ SPDX-PackageDownloadLocation = "https://github.com/ironcore-dev/enhancements"
 path = [
     ".github/**",
     ".gitignore",
+    "CODEOWNERS",
     "REUSE.toml",
 ]
 precedence = "aggregate"
