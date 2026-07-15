@@ -41,12 +41,12 @@ receive new claims. This state is implied by a combination of
 `ServerMaintenanceRef` and the server's state machine. Because the signal is
 implicit and stringly-typed, different components, placement logic, the
 maintenance controllers, and external workload managers, each independently
-re-derive the same "is this server schedulable?" answer. This leads to
+re-derive the same "is this server claimable?" answer. This leads to
 inconsistency and drift between components.
 
 A typed cordon field makes the signal explicit and observable in `status`, so
 consumers can react without scraping labels, and a single authority (the
-`ServerClaim` reconciler) decides schedulability.
+`ServerClaim` reconciler) decides claimability.
 
 ### Goals
 
@@ -55,7 +55,8 @@ consumers can react without scraping labels, and a single authority (the
 * Make cordon observable through `status` so consumers can react without
   scraping labels.
 * Ensure placement and claim-binding logic honors the cordon signal: a
-  cordoned `Server` MUST NOT receive new `ServerClaim` bindings.
+  cordoned `Server` MUST NOT receive new `ServerClaim` bindings (i.e. it becomes
+  unclaimable).
 
 ### Non-Goals
 
@@ -76,7 +77,7 @@ Already-bound claims are unaffected by cordon alone.
 
 ### API Change
 
-We add `spec.unschedulable: bool` to `Server`. The field is the single source
+We add `spec.unclaimable: bool` to `Server`. The field is the single source
 of truth for "do not place new claims here". We deliberately choose a spec
 field over a label / annotation: it gives schema validation, natural printer
 columns, and avoids mirroring the stringly-typed approach we are moving away
@@ -86,11 +87,11 @@ from.
 type ServerSpec struct {
 	// ... existing fields ...
 
-	// Unschedulable, when true, prevents new ServerClaims from being bound to
+	// Unclaimable, when true, prevents new ServerClaims from being bound to
 	// this Server. Already-bound claims are unaffected.
 	// +kubebuilder:default=false
 	// +optional
-	Unschedulable bool `json:"unschedulable,omitempty"`
+	Unclaimable bool `json:"unclaimable,omitempty"`
 }
 ```
 
@@ -98,7 +99,7 @@ type ServerSpec struct {
 
 The `ServerClaim` reconciler already resolves candidate servers via a label
 selector and / or an explicit `serverRef`. The scheduler is extended to skip
-any candidate whose `spec.unschedulable` is `true`:
+any candidate whose `spec.unclaimable` is `true`:
 
 * A claim with an explicit `serverRef` to a cordoned server stays `Pending`
   with a condition explaining why it is not bound.
@@ -112,7 +113,7 @@ Cordon does **not** affect an already-bound claim. The `serverClaimRef` on a
 ### Interaction with the State Machine
 
 Cordon is orthogonal to the `Initial -> Discovery -> Available -> Reserved`
-state machine. It affects scheduling, not phase progression. A server may be
+state machine. It affects claimability, not phase progression. A server may be
 cordoned in any state; in particular, a cordoned server in `Available` simply
 will not be picked up by new claims until uncordoned.
 
@@ -128,11 +129,11 @@ admins for manual maintenance and automated maintenance controllers.
 Keep cordon implicit and derived from the existing
 `metal.ironcore.dev/maintenance-*` labels and annotations plus
 `ServerMaintenanceRef`. This is the status quo: it works, but it forces every
-consumer to re-derive schedulability from a combination of stringly-typed
+consumer to re-derive claimability from a combination of stringly-typed
 labels and annotations, which is the source of the inconsistency this proposal
 sets out to remove. We explicitly move away from it.
 
-Use a dedicated label such as `metal.ironcore.dev/unschedulable` instead of a
+Use a dedicated label such as `metal.ironcore.dev/unclaimable` instead of a
 spec field. This mirrors today's approach and inherits its drawbacks: no
 schema validation, no natural printer columns, and it keeps the signal in
 labels, exactly what this proposal moves away from.
