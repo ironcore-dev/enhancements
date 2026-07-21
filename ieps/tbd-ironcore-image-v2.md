@@ -78,9 +78,11 @@ functionality using e.g. initramfs layering.
   config media and manifest type:
   * UKI-like boot mode
   * Disk boot mode
+  * EFI executable boot mode
 * Don't specify UKIs as UKI binary blobs anymore. Instead,
   specify their components (kernel, initrd, stub etc.) as distinct layers,
   allowing for layer deduplication.
+* Still allow passing in EFI executables directly for non-UKI use cases.
 * Create facilities for installer images: Namely, composability of initramfs
   and simple reboot to disk after finishing disk writing.
 
@@ -150,8 +152,7 @@ being appended via default media type extension (e.g. `+xz`).
 
 ### EFI executable booting
 
-EFI executable booting just allows specifying a raw EFI
-executable to boot.
+EFI executable booting allows specifying an EFI executable to boot.
 
 #### Manifest
 
@@ -170,6 +171,14 @@ executable to boot.
 ```json
 {}
 ```
+
+#### EFI Executable
+
+The EFI executable, required.
+
+**Media Type**
+
+`application/vnd.ironcore.efi.executable`
 
 ### Disk booting
 
