@@ -51,8 +51,6 @@ different ways to boot:
 * [Direct kernel + initramfs](https://github.com/ironcore-dev/ironcore-image/blob/f89db68d5e9323ed5d6024ba70897e077504c25b/image.go#L19)
 * [Squashfs](https://github.com/ironcore-dev/ironcore-image/blob/main/image.go#L20) 
 
-There's even a 'missing' way to boot: 'Raw' EFI executables.
-
 ### Lack of Layer Deduplication
 
 For UKI booting, since we allow specifying the entire UKI, we cannot make use
@@ -80,11 +78,9 @@ functionality using e.g. initramfs layering.
   config media and manifest type:
   * UKI-like boot mode
   * Disk boot mode
-  * Raw EFI executable boot mode
 * Don't specify UKIs as UKI binary blobs anymore. Instead,
   specify their components (kernel, initrd, stub etc.) as distinct layers,
-  allowing for layer deduplication. If someone still chooses to e.g. specify
-  a UKI as raw EFI executable, no deduping / further processing will happen.
+  allowing for layer deduplication.
 * Create facilities for installer images: Namely, composability of initramfs
   and simple reboot to disk after finishing disk writing.
 
@@ -108,7 +104,7 @@ that gives everyone the right mental model.
 
 **Artifact Type**
 
-`application/vnd.ironcore+disk`
+`application/vnd.ironcore+uki`
 
 #### Config
 
@@ -174,14 +170,6 @@ executable to boot.
 ```json
 {}
 ```
-
-#### EFI Executable
-
-The EFI executable, required.
-
-**Media Type**
-
-`application/vnd.ironcore.efi.executable`
 
 ### Disk booting
 
