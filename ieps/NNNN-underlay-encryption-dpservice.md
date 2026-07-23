@@ -43,7 +43,7 @@ Once enabled, all underlay traffic originating from dpservice instances must be 
 
 ### Goals
 
-- Add the possibility to encrypt IPv6-encapsulated traffic between dpservice instances using IPsec ESP in transport mode
+- Add the possibility to encrypt IPv6-encapsulated traffic between dpservice instances using IPsec Encapsulating Security Payload ([ESP](https://www.rfc-editor.org/info/rfc4303)) in transport mode
 
 ### Non-Goals
 
@@ -53,8 +53,6 @@ Once enabled, all underlay traffic originating from dpservice instances must be 
 - The decision of whether to encrypt outgoing packets in dpservice will rely on a sound decision in the control plane. That means that when no encryption for a combination of underly IPv6 address and VNI is configured packets will be sent unencrypted.
 
 - The option to offload encryption to the network card will be part of a subsequent enhancement.
-  Melanox BlueField network cards also support crypto offloading for IPsec (<https://docs.nvidia.com/doca/sdk/ipsec-crypto-offload/index.html>). 
-  This will require a secondary version of the implementation in the code, because the workflow between the CPU and the offloaded version is different. 
 
 - This IEP aims for East-West traffic encryption between compute hosts running dpservice. North-South traffic between compute hosts and routers will not be encrypted and thus routers will not be in the focus. However, all changes made here shall avoid complications with future integration with the Linux kernel XFRM interface.
 
