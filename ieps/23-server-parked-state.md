@@ -23,10 +23,10 @@ reviewers:
 
 - [Summary](#summary)
 - [Motivation](#motivation)
-    - [Goals](#goals)
-    - [Non-Goals](#non-goals)
+   - [Goals](#goals)
+   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-    - [Lifecycle](#lifecycle)
+   - [Lifecycle](#lifecycle)
 - [Alternatives](#alternatives)
 - [Open Questions](#open-questions)
 
@@ -41,9 +41,16 @@ reconcilers. In particular the `ServerClaim` and `Server` reconcilers must not
 boot the server back from disk via `BootConfigurationRef` during intermediate
 restarts the procedure may trigger.
 
-This is a deliberately **small, operational** mechanism: it adds one state,
-triggered by `metal.ironcore.dev/operation: park`; the status state is the
-acknowledgment.
+This is a deliberately **small, operational** mechanism. It uses **two
+annotations** with distinct roles:
+
+- `metal.ironcore.dev/operation: park`: An external actor sets
+  it to ask the operator to park the server. It is **transient**: the reconciler
+  removes it again as soon as the server has reached `Parked`.
+- `metal.ironcore.dev/parked: "true"`: An **internal** annotation
+  the operator sets when it parks the server and removes when it un-parks it. It
+  is the durable marker of the parked state, so the parked status can always be
+  reconstructed -  even if `status.state` is lost or reset. 
 
 ## Motivation
 
@@ -55,9 +62,9 @@ against the claim. The `Server` reconciler also honors the out-of-band
 a generic `ignore` value that skips one object.
 
 The gap: there is **no first-class "park me" state** that makes both
-reconcilers stand down — stopping the `ServerClaim` reconciler from
+reconcilers stand down -  stopping the `ServerClaim` reconciler from
 (re)applying the boot configuration or reverting power, and the `Server`
-reconciler from booting the claim's image — while still leaving the
+reconciler from booting the claim's image -  while still leaving the
 `ServerClaim` object in place (bound), so that on recovery the claim
 controller can take over again without re-scheduling.
 
@@ -85,7 +92,11 @@ back" signal is received.
   normal progression, boot, and power healing while active.
 - Provide a new `park` value on the existing out-of-band operation annotation
   (`metal.ironcore.dev/operation: park`) that an external component can set to
-  request parking.
+  **request** parking. The annotation is transient and removed once the server is
+  parked.
+- Persist the parked state in a dedicated **internal** annotation
+  (`metal.ironcore.dev/parked`) so the parked status is always reconstructable
+  and the reconcilers stand down across operator restarts.
 - Keep the `ServerClaim` bound during parking so it can resume ownership on
   recovery without re-scheduling.
 
@@ -112,36 +123,60 @@ and power healing are suspended.
      annotations:
        metal.ironcore.dev/operation: park
    ```
+
+   This is a one-shot request; it does **not** itself persist the parked state.
 2. **Park.** The `Server` reconciler observes the request and:
-   - powers the server **off** (idempotent; only if not already off),
-   - ensures the claim's `BootConfigurationRef` is **not** on the active boot
+  - powers the server **off** (idempotent; only if not already off),
+  - ensures the claim's `BootConfigurationRef` is **not** on the active boot
      path so an intermediate restart cannot boot the claim image,
-   - sets `status.state = Parked`.
-3. **Stand down.** While `status.state == Parked`:
-   - the `Server` reconciler returns early, before any power healing, boot,
+  - records the parked state by setting the **internal** annotation
+     `metal.ironcore.dev/parked: "true"`,
+  - sets `status.state = Parked`,
+  - **removes** the `metal.ironcore.dev/operation: park` request annotation
+     again, so the request does not linger once the server has reached `Parked`.
+3. **Stand down.** While `status.state == Parked` / the
+   `metal.ironcore.dev/parked` annotation is present:
+  - the `Server` reconciler returns early, before any power healing, boot,
      or state-machine progression,
-   - the `ServerClaim` reconciler returns early, so the claim does not
+  - the `ServerClaim` reconciler returns early, so the claim does not
      re-apply the boot configuration or revert power. The `ServerClaim` stays
      bound; its phase is unchanged.
-4. **Resume.** The external actor removes the `metal.ironcore.dev/operation`
-   annotation (or clears its `park` value). The next reconciliation re-enters
-   the normal flow:
-   - the `Server` reconciler refreshes system info (hardware or firmware
+
+   The internal `parked` annotation is the source of truth for "this server is
+   parked": if `status.state` is ever lost or reset, the reconcilers
+   reconstruct the parked status from the annotation and keep standing down.
+4. **Resume.** The external actor removes the **internal**
+   `metal.ironcore.dev/parked` annotation (or clears its value) to bring the
+   server back from `Parked`. The next reconciliation re-enters the normal
+   flow:
+  - the `Server` reconciler refreshes system info (hardware or firmware
      state may have changed during the procedure),
-   - transitions back to the pre-parking state: `Reserved` if the server
+  - transitions back to the pre-parking state: `Reserved` if the server
      has a `ServerClaimRef`, otherwise `Available` (or `Initial` if it had
      not yet been discovered),
-   - the `ServerClaim` reconciler takes over again and re-applies the boot
+  - the `ServerClaim` reconciler takes over again and re-applies the boot
      configuration and power state as before.
+
+   Removing the `metal.ironcore.dev/operation` annotation is **not** the resume
+   signal -  that annotation was already consumed during parking. Resume is
+   driven by the requestor removing the internal `parked` annotation.
 
 ## Alternatives
 
-- **A boolean spec field (`spec.parked`).** Rejected in favor of the operation
-  annotation. The `metal.ironcore.dev/operation` grammar already exists as the
+- **A single `operation: park` annotation that also holds the state.** Rejected.
+  Conflating the request with the state has two problems: the request would have
+  to linger (and be re-triggered on every reconcile) to keep the server parked,
+  and there would be no durable marker to reconstruct the parked status from if
+  `status.state` is ever lost. Splitting into a transient request annotation
+  (`metal.ironcore.dev/operation: park`) and a durable internal state annotation
+  (`metal.ironcore.dev/parked`) keeps the request one-shot while the state
+  persists.
+- **A boolean spec field (`spec.parked`).** Rejected in favor of the annotation
+  pair. The `metal.ironcore.dev/operation` grammar already exists as the
   established channel for an external actor to signal the operator to stand
-  down, so reusing it keeps the API surface small and consistent with how power
-  operations are already requested. A spec field would duplicate that channel
-  without adding capability.
+  down, so reusing it for the request keeps the API surface small and consistent
+  with how power operations are already requested. A spec field would duplicate
+  that channel without adding capability.
 - **Reuse plain `metal.ironcore.dev/operation: ignore`.** Skips one object but
   does not power the server down or signal safe-to-proceed. `Parked` adds
   parking and a real observed state.
@@ -150,4 +185,11 @@ and power healing are suspended.
 
 - **Interaction with deletion.** If a `Server` is deleted while `Parked`, the
   deletion path must still be able to remove the finalizer and clean up the
-  boot configuration. Confirm there is no deadlock when the server is parked.
+  boot configuration. Confirm there is no deadlock when the server is parked
+  (i.e. the `metal.ironcore.dev/parked` annotation must not gate the deletion
+  path).
+- **Resume target ambiguity.** The pre-parking state is inferred from the
+  presence of `ServerClaimRef` (`Reserved`) vs. absence (`Available`). Decide
+  whether to instead record the concrete pre-parking state alongside the
+  `parked` annotation so resume is unambiguous regardless of changes during
+  the procedure.
