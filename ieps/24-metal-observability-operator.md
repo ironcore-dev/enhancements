@@ -1,5 +1,5 @@
 ---
-title: Introduce metal-observability-operator as home for metal metrics
+title: Introduce metal-observability-operator as the observability home for the metal stack
 
 iep-number: 24
 
@@ -17,7 +17,7 @@ reviewers:
 
 ---
 
-# IEP-24: Introduce metal-observability-operator as home for metal metrics
+# IEP-24: Introduce metal-observability-operator as the observability home for the metal stack
 
 ## Table of Contents
 
@@ -27,49 +27,63 @@ reviewers:
     - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
 - [Alternatives](#alternatives)
+    - [Alternative 1: Merge telemetry pipeline as-is into metal-maintenance-operator](#alternative-1-merge-telemetry-pipeline-as-is-into-metal-maintenance-operator)
+    - [Alternative 2: Keep metrics in metal-operator](#alternative-2-keep-metrics-in-metal-operator)
 
 ## Summary
 
-Metrics are being moved out of `metal-operator`. This proposal argues that the migration target should be a new, dedicated `metal-observability-operator` rather than `metal-maintenance-operator`, which is the currently planned target.
+This IEP proposes creating `metal-observability-operator` as a dedicated home for observability concerns in the metal stack, and defines a clean split of responsibilities with `metal-maintenance-operator` for the ongoing BMC telemetry pipeline work.
+
+`metal-maintenance-operator` manages BMC subscriptions — it knows the BMCs, holds the credentials, and reconciles subscription state. `metal-observability-operator` owns the inbound side: the Redfish event receiver, Prometheus sinks, and BMC service discovery. If `metal-observability-operator` is not deployed, `metal-maintenance-operator` simply does not create subscriptions. The system degrades gracefully.
 
 ## Motivation
 
-Moving metrics out of `metal-operator` is the right direction. However, the current target — `metal-maintenance-operator` — is a convenience choice driven by availability rather than architectural intent. Maintenance and observability are distinct concerns; co-locating them produces a component with a blurred responsibility boundary that becomes harder to reason about, document, and evolve independently.
+Work is underway to add a Redfish telemetry pipeline to the metal stack (see [metal-maintenance-operator#110](https://github.com/ironcore-dev/metal-maintenance-operator/pull/110)). The current plan places the entire pipeline — BMC subscription reconciliation, an inbound HTTP event receiver on `:9092`, Prometheus sinks, and BMC service discovery — inside `metal-maintenance-operator`.
 
-`metal-observability-operator` makes the responsibility boundary explicit and mirrors the approach taken in IEP-13 for the SONiC stack: observability as a first-class, named concern with its own operator.
+The BMC subscription reconciler is a reasonable fit for `metal-maintenance-operator`: creating and managing subscriptions on a BMC is the same pattern as `BMCSetting` reconciliation. However, the event receiver is a different kind of component. It is an externally-reachable HTTP listener with its own port, service, and availability requirements — a different operational profile from a reconciliation loop. Co-locating the two means `metal-maintenance-operator` must be operated, scaled, and secured as both a reconciler and a network service simultaneously.
+
+A dedicated `metal-observability-operator` gives the listener, Prometheus sinks, and service discovery a proper home with a clear name and independent operational lifecycle.
+
+The bootstrapping cost is real but bounded: `metal-maintenance-operator` was recently created from scratch, so the team has a clear template and recent experience to draw from.
 
 ### Goals
 
-- Establish `metal-observability-operator` as the canonical home for metrics (and potentially other observability signals) originating from the metal stack.
-- Keep maintenance and observability concerns in separate operators with clearly named responsibilities.
-- Provide a coherent, extensible home for future observability additions (alerting rules, health checks, status reporting) without scope creep into `metal-maintenance-operator`.
+- Establish `metal-observability-operator` as the canonical home for the Redfish event receiver, Prometheus sinks, and BMC service discovery (`/sd/bmcs`).
+- Keep BMC subscription management in `metal-maintenance-operator`, where it fits alongside existing BMC lifecycle concerns.
+- Allow `metal-observability-operator` to be deployed and scaled independently from `metal-maintenance-operator`.
+- Provide a coherent, extensible home for future observability additions without scope creep into `metal-maintenance-operator`.
 
 ### Non-Goals
 
-- Defining the full set of metrics to be migrated — that work continues independently.
-- Replacing or modifying `metal-maintenance-operator` beyond removing metrics from its scope.
+- Redefining the scope or responsibilities of `metal-maintenance-operator` beyond subscription management.
 - Implementing dashboards, alerting rules, or scrape configuration — those belong in deployment-specific configuration.
+- Resolving the `CriticalEventReceived` condition write — deferred to a follow-up enhancement.
 
 ## Proposal
 
-Create a new `metal-observability-operator` as the migration target for metrics currently in `metal-operator`. The operator follows the same Prometheus/ServiceMonitor patterns established elsewhere in the stack.
+Create `metal-observability-operator` and split the telemetry pipeline as follows:
 
-The name communicates purpose unambiguously. It also gives the observability surface room to grow (additional signals, new exporters, health-check aggregation) without widening the scope of an operator that exists for a different reason.
+**`metal-maintenance-operator`** reconciles BMC subscriptions. It is configured with the endpoint URL of `metal-observability-operator`'s event receiver. If that URL is not configured (i.e. `metal-observability-operator` is not deployed), subscription creation is skipped. No subscriptions means no events — the system degrades gracefully without entering a broken state.
 
-The bootstrapping cost is real but bounded: `metal-maintenance-operator` was recently created from scratch, so the team has a clear template and recent experience to draw from. The investment buys a structure that won't need untangling later.
+**`metal-observability-operator`** owns:
+- The Redfish event receiver (`:9092`) — inbound HTTP listener for BMC-pushed events
+- Prometheus sinks — event counters and metric gauges
+- `/sd/bmcs` service discovery endpoint
 
-Migration of the metrics themselves is out of scope for this IEP and proceeds as currently planned, with only the target operator changed.
+The coupling between the two operators is explicit and unidirectional: `metal-maintenance-operator` depends on `metal-observability-operator`'s address, not the other way around.
+
+The bootstrapping cost is bounded: `metal-maintenance-operator` was recently created from scratch and serves as the template.
+
+The `CriticalEventReceived` condition write on `Server` objects is out of scope for this IEP and will be addressed in a follow-up, once the operational boundary is established.
 
 ## Alternatives
 
-### Alternative 1: Move metrics to metal-maintenance-operator
+### Alternative 1: Merge telemetry pipeline as-is into metal-maintenance-operator
 
-The currently planned approach. `metal-maintenance-operator` exists and is available, which reduces upfront work.
+Place the entire pipeline — subscription reconciler, event receiver, Prometheus sinks, service discovery — in `metal-maintenance-operator`.
 
-**Rejected because:** availability is not an architectural reason. Maintenance and observability are independent concerns. Combining them in one operator makes the component harder to describe, harder to evolve independently, and sets a precedent for further scope creep. The short-term cost saving of not bootstrapping a new operator is outweighed by the long-term cost of untangling a mixed-responsibility operator.
+The event receiver on `:9092` is an externally-reachable HTTP listener with a different operational profile from a reconciliation loop. Running both in the same binary means `metal-maintenance-operator` must be operated, scaled, and secured as both a reconciler and a network service.
 
 ### Alternative 2: Keep metrics in metal-operator
 
 Revert the migration and continue exposing metrics from `metal-operator` directly.
-
-**Rejected because:** the motivation for moving metrics out of `metal-operator` is sound and not revisited here.
