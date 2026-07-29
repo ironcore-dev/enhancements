@@ -1,7 +1,7 @@
 ---
 title: Introduce metal-observability-operator as the observability home for the metal stack
 
-iep-number: 24
+iep-number: XX
 
 creation-date: 2026-07-29
 
@@ -17,7 +17,7 @@ reviewers:
 
 ---
 
-# IEP-24: Introduce metal-observability-operator as the observability home for the metal stack
+# IEP-XX: Introduce metal-observability-operator as the observability home for the metal stack
 
 ## Table of Contents
 
