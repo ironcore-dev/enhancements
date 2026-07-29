@@ -48,7 +48,7 @@ Once enabled, all underlay traffic originating from dpservice instances must be 
 ### Non-Goals
 
 - This IEP does not handle the topic of key exchange. It is assumed that a symmetric key and salt will be made available to both 
-  communication ends of a Security Association. 
+  communication ends of a Security Association (SA). 
 
 - The decision of whether to encrypt outgoing packets in dpservice will rely on a sound decision in the control plane. That means that when no encryption for a combination of underly IPv6 address and VNI is configured packets will be sent unencrypted.
 
@@ -110,7 +110,7 @@ As there is already encapsulation and decapsulation in place, this will basicall
 
 Packets will be encrypted on the sender side after the IPv6-encapsulation and before the decapsulation on the receiver side. 
 This ensures, that only traffic leaving/entering the physical host, will be encrypted and decrypted to avoid unnecessary packet processing overhead. 
-An SA is created for each remote compute host, or rather remote dpservice instance, with which the local dpservice has to exchange packets. 
+A Security Association (SA) is created for each remote compute host, or rather remote dpservice instance, with which the local dpservice has to exchange packets. 
 These SAs are stored in the DPDK SA database. 
 The key as well as the salt (see [RFC4106](https://datatracker.ietf.org/doc/html/rfc4106)) for the encrypted connection is provided over the gRPC connection. 
 Whenever a new key is pushed, a new SA gets created. Pushing a new key for an established SA will be used for key rotation.
@@ -128,6 +128,21 @@ As of now dpservice already sends IP-in-IPv6 packets in the underlay network. Th
 
 *ICV - Integrity Check Value 
 ```
+
+Using ESP introduces state to all connections.  
+An SA fixes a method of encryption and the related key plus potential salt for each pair of communication partners. That information is identified by an SPI (Security Policy Identifier) which is included in each packet. 
+It is added by the sender when crafting the ESP header and read by the receiver to choose the matching key for decryption. 
+The information about which connection to protect is stored in the Security Policy Database (SPD). The information on how to handle the protection is stored in the Security Association Database (SAD).   
+When replay protection is required, the sequence numbers of each packet must be known on both sides. The sender needs to increment it one by one and the receiver needs to keep track of the last numbers to keep his replay window up to date. On the receiver side, this state cannot be rebuilt purely from the information contained in one or multiple packets. Making a stateful tracking of packets necessary for both communication ends.
+
+In case statelessness is desired instead, [RFC4304 - 3.3.3](https://www.rfc-editor.org/info/rfc4303/#section-3.3.3) contains information on how ESP should be configured without replay protection. This configuration is on per SA basis, meaning that some SAs could be replay protected while others are not. DPDK's IPsec library allows enabling and disabling of sequence number checks via the [replay_win_sz](https://doc.dpdk.org/api/structrte__security__ipsec__xform.html#a85eb02412c31f7fbf81890c32a231b95). This makes it configurable whether this state should be built and maintained.
+
+#### Impact on HA abilites
+According to the [documentation](https://github.com/ironcore-dev/dpservice/blob/main/docs/ha/README.md), a running dpservice can have an HA failover instance running in active-standby. In order to avoid packet loss or interruptions in the failover case, a sync connection is in place to keep the already existing state of the active and the standby instance synchronized. The SPD as well as the SAD would need to be kept in sync as well as the single SAs. Without replay protection this should simply be the same gRPC calls to both instances as they would only need to care about the key material and SPI. With replay protection, however, the current sequence number would need to be maintained. Synchronizing each increment of an SA sequence number counter would be quite an overhead in synchronisation traffic.
+
+Hence, a possibly strategy would be working with batches of sequence numbers on the sending side. That is, the sender locks a range of n sequence numbers and shares that information with the standby instance (e.g. current range: 0,500). In case of a failover the standby node starts with the next range of packets. Larger sequence numbers should not be a problem for the general replay protection functionality.
+
+On the receiving end, the standby node would need to know the last known sequence number. If it knows a lower one it is prone to replay attacks. The easiest approach would be starting at sequence number 0 which comes with the downside that any packet could be replayed. If the active instance synchronizes its last known sequence number only every x seconds or packets, the window of potential replay packets would be smaller. With that information the SAs on the standby instance could be kept up to date and a failover should work seamlessly.
 
 #### Key rotation
 During key rotation there will need to be two SAs in place between a pair of compute hosts. The old one that shall be superseded and the new one.
