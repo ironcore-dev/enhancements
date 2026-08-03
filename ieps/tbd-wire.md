@@ -31,7 +31,7 @@ reviewers:
 
 ## Summary
 
-Implement an extensible and declarative switch network API that expresses
+Implement an extensible and declarative network configuration API that expresses
 how we configure our network.
 
 ## Motivation
@@ -269,20 +269,17 @@ metadata:
 spec:
   nodeRef:
     name: spine-01
+  id: bgp://1
   ips:
   - loopback ip
   prefixes:
   - prefix
-  bgp:
-    asn: 0001
-    peerGroups:
-    - name: leafs
-      neighbors:
-      - interfaceRef:
-          name: spine-01-if-01
+  neighbors:
+  - interfaceRef:
+    name: spine-01-if-01
 ```
 
-Leaf switch (namespaced):
+Leaf cell (namespaced):
 
 ```yaml
 apiVersion: wire.ironcore.dev
@@ -293,29 +290,18 @@ metadata:
 spec:
   nodeRef:
     name: leaf-01
+  id: bgp://2
   ips:
   - loopback ip
   prefixes:
   - prefix
-  vlans:
-  - id: 1000
-    prefix: foo/80
+  neighbors:
+  - interfaceRef: leaf-01-if-01
+  - interfaceRef: leaf-01-if-02
     dhcpRelay: my-dhcp-server
-    interfaceRefs:
-    - name: leaf-01-if-02
-  bgp:
-    asn: 0002
-    peerGroups:
-    - name: spines
-      neighbors:
-      - interfaceRef:
-          name: leaf-01-if-01
-    - name: leafs
-      neighbors:
-      - vlan: 1000
 ```
 
-Host (namespaced):
+Host cell (namespaced):
 
 ```yaml
 apiVersion: wire.ironcore.dev
@@ -326,24 +312,18 @@ metadata:
 spec:
   nodeRef:
     name: host-01
+  id: bgp://3
   ips:
   - ip1
   prefixes:
   - prefix
-  bgp:
-    asn: 0003
-    peerGroups:
-    - name: leafs
-      neighbors:
-      - interfaceRef:
-          name: host-01-if-01
+  neighbors:
+  - interfaceRef:
+      name: host-01-if-01
 ```
 
 These manifests configure a network roughly as described above: A
 spine connected to a leaf and that leaf connected to a host.
-
-The leaf also creates a VLAN around the interface towards the host
-to configure DHCP relay.
 
 ### Resource Lifecycle
 
@@ -353,7 +333,7 @@ and they are created by an administrator.
 There must be one controller or multiple controllers that watch the `Node`s
 and `Interface`s that are managed by it. Once a `Cell` shows up in a
 namespace referencing a `Node`, the controller checks whether the `Node` is
-in-use by another switch. This is done via the `Node.spec.cellRef` field:
+in-use by another cell. This is done via the `Node.spec.cellRef` field:
 
 ```yaml
 # Unclaimed node
@@ -381,7 +361,7 @@ By referencing the `Cell` back from the `Node`, we ensure that there can ever
 only be at most one `Cell` on a `Node`.
 
 Once a `Cell` has successfully claimed a `Node`, it is resolved exactly once.
-The resolved configuration of the switch is handed over to a runtime interface,
+The resolved configuration of the cell is handed over to a runtime interface,
 actually applying the configuration to the physical switch.
 
 To reconfigure a `Node`, the `Cell` must be deleted and a new `Cell` resource
@@ -404,9 +384,9 @@ type Runtime interface {
 
 	// NodeID returns the provider internal ID of the node specified with by the given node name.
 	NodeID(ctx context.Context, node string) (string, error)
-	// ApplyCell applies the given switch configuration to the specified node.
+	// ApplyCell applies the given cell configuration to the specified node.
 	ApplyCell(ctx context.Context, node string, cfg *CellConfig) error
-	// DeleteCell deletes the given switch configuration from the specified node.
+	// DeleteCell deletes the given cell configuration from the specified node.
 	DeleteCell(ctx context.Context, node string) error
 
 	// InterfaceID returns the provider internal ID of the interface specified by the given interface name.
