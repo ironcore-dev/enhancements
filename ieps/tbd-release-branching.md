@@ -33,11 +33,15 @@ reviewers:
 
 This proposal discusses the approach for management of release versions, release branches in git and GitHub, and when a release branch should be created that is suitable for backports to older versions.
 
+This proposal optimizes for pre-1.0 releases during development, where using an older release is less likely.
+
 ## Motivation
 
 Versions currently in production and in development can diverge. It can become necessary to apply ("backport") a fix that is in the current development branch (`main`) to an older release, without taking on all other changes from that development branch, e.g. new features.
 
 This ensures that an old in-production version receives the necessary fix. At the same time there is no risk to introduce a change in behavior because of new features or breaking changes that live in the `main` branch.
+
+The focus on pre-1.0 development is to keep overhead to a minimum during this phase. Once longer-term support releases are available, one of the discussed alternatives will likely be more suitable.
 
 ### Goals
 
@@ -80,7 +84,7 @@ The main benefits:
 * Good application of the [YAGNI][yagni] principle, specifically in term of [keeping options open for later when the need arises][yagni-beck].
 
 The drawbacks:
-* Determining the 'branching off point' for the maintenance branch is not as clear-cut and may require manual intervention or complex logic.
+* Determining the 'branching off point' for the maintenance branch as part of automation (e.g. bugfix PR backport script / workflow) is not as clear-cut and may require manual intervention or complex logic to create the branch at the correct place on the fly.
 * Once there are different versions in operation in different installations, backports may become more frequent.
 
 ### Notes on dependency updates
