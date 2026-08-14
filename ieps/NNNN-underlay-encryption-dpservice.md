@@ -37,9 +37,10 @@ This touches on the networking component dpservice in the first place. In furthe
 
 ## Motivation
 
-Currently, the underlay network does not provide encryption. 
-However, to align with regulatory requirements for specific security domains (for example as mandated by the BSI), encryption is necessary. 
-Once enabled, all underlay traffic originating from dpservice instances must be encrypted to ensure data confidentiality and integrity.
+Currently, the underlay network does not provide encryption. Applications are, however, free to apply encryption on the overlay network. 
+In case applications are unable to communicate securely (for whatever reason), it would be desirable to offer underlay network encryption.
+Regulatory requirements like BSI Grundschutz (see NET.1.1.A7 Absicherung von schützenswerten Informationen (B)) reflect the need for secure communication via secure protocols or secured network segments. 
+Encryption of the underlay traffic in the right scope would thus make it possible to run software that cannot communicate securely itself and align with regulatory requirements.
 
 ### Goals
 
