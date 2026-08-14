@@ -131,7 +131,7 @@ As of now dpservice already sends IP-in-IPv6 packets in the underlay network. Th
 ```
 
 Using ESP introduces state to all connections.  
-An SA fixes a method of encryption and the related key plus potential salt for each pair of communication partners. That information is identified by an SPI (Security Policy Identifier) which is included in each packet. 
+An SA fixes a method of encryption and the related key plus potential salt for each pair of communication partners. That information is identified by an SPI (Security Parameter Index) which is included in each packet. 
 It is added by the sender when crafting the ESP header and read by the receiver to choose the matching key for decryption. 
 The information about which connection to protect is stored in the Security Policy Database (SPD). The information on how to handle the protection is stored in the Security Association Database (SAD).   
 When replay protection is required, the sequence numbers of each packet must be known on both sides. The sender needs to increment it one by one and the receiver needs to keep track of the last numbers to keep his replay window up to date. On the receiver side, this state cannot be rebuilt purely from the information contained in one or multiple packets. Making a stateful tracking of packets necessary for both communication ends.
