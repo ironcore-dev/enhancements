@@ -36,7 +36,7 @@ how we configure our network.
 
 ## Motivation
 
-We currently provision or switches with central templates and lots
+We currently provision our switches with central templates and lots
 of implicit configuration. Instead of this, we want to make the configuration
 more explicit while staying vendor independent. Additionally, we want to
 have a clear language on how we configure our switches and when.
@@ -65,7 +65,7 @@ when it happens.
 Our network follows a CLOS topology: A level of spines, leaves
 and hosts connected to the leaves.
 
-Each host is connected to two leaves and each leave is connected to
+Each host is connected to two leaves and each leaf is connected to
 two spines for extra redundancy.
 
 The connection towards the hosts from the leaves is also 'wrapped'
@@ -179,7 +179,7 @@ resource, we gain several core benefits:
 * Having a single object means the implementors of this API can construct
   the most optimal way to apply the entire configuration: E.g. depending
   on the vendor, the sequence to apply a configuration can heavily differ.
-  Having the entire desired configuration at once is the only allow a vendor
+  Having the entire desired configuration at once is the only way to allow a vendor
   to implement this correctly.
 
 * By having a `Cell` resource that expresses the effective configuration,
@@ -187,6 +187,11 @@ resource, we gain several core benefits:
   configurations can be done. One could e.g. think of a higher-level type
   and controller that first drains traffic, removes the old `Cell` object
   once drained and creates a new one once ready.
+
+* A `Cell` expresses the desired state and leaves the implementation details
+  to the implementor. In our current setup for example, we have VLANs
+  wrapping ports (implementation detail) to enable DHCP relay (desired feature),
+  hence VLAN does not appear in the spec.
 
 ### Sample Resources
 
@@ -271,7 +276,7 @@ spec:
     name: spine-01
   id: bgp://1
   ips:
-  - loopback ip
+  - loopback-ip
   prefixes:
   - prefix
   neighbors:
@@ -292,7 +297,7 @@ spec:
     name: leaf-01
   id: bgp://2
   ips:
-  - loopback ip
+  - loopback-ip
   prefixes:
   - prefix
   neighbors:
