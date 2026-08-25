@@ -211,7 +211,6 @@ metadata:
   name: spine-01-if-01
 spec:
   handle: sonic://if-01
-  adminState: Up
   nodeRef:
     name: spine-01
 ```
@@ -232,7 +231,6 @@ metadata:
   name: leaf-01-if-01
 spec:
   handle: sonic://if-01
-  adminState: Up
   nodeRef:
     name: leaf-01
 ---
@@ -242,7 +240,6 @@ metadata:
   name: leaf-01-if-02
 spec:
   handle: sonic://if-02
-  adminState: Up
   nodeRef:
     name: leaf-01
 ```
@@ -333,7 +330,7 @@ spine connected to a leaf and that leaf connected to a host.
 ### Resource Lifecycle
 
 As the cluster-scoped resources (`Node`, `Interface`) represent the ground truth,
-and they are created by an administrator.
+and they are created by a controller or administrator.
 
 There must be one controller or multiple controllers that watch the `Node`s
 and `Interface`s that are managed by it. Once a `Cell` shows up in a
@@ -398,9 +395,6 @@ type Runtime interface {
 	InterfaceID(ctx context.Context, iface string) (string, error)
 	// InterfaceState returns the state of the interface specified by the given interface name.
 	InterfaceState(ctx context.Context, iface string) (*InterfaceState, error)
-	// SetInterfaceAdminState sets the admin state of the interface specified by the given interface
-	// name to the given value.
-	SetInterfaceAdminState(ctx context.Context, iface string, adminState bool) error
 }
 ```
 
