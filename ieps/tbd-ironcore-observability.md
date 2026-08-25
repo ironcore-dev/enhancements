@@ -243,6 +243,34 @@ can be used for statistical analysis, e.g. how many entities were processed in a
 given time. At this point, there is an overlap with the information as exposed
 by metrics.
 
+#### json(l) and logfmt
+
+Two popular formats for structured logging have emerged:
+
+1. `JSONL` (JSON Line), where each line is a JSON object `[string]any`. There
+ are various tools for processing `JSONL`, including `jq` and various log
+ viewers.
+2. `logfmt`, which provides key-value pairs, e.g.  
+  `time=2026-07-11T12:44:22.251Z msg="This is the log" process="main.go" level="info"`
+
+Both provide the means to structure logs and mark specific information semantically.
+
+That said, both formats just define that there are fields with values. Naming
+those fields is still up to the implementer. Consequently, everybody calls the
+same thing differently across different software products. Timestamps can be
+`t`, `ts`, `time`, `timestamp`, log levels are `level`, `severity` and various
+abbreviations thereof.
+
+Additionally, the storage backends may require specific field names for their
+semantic meaning, e.g. `_msg` for the message to display, and a known name for
+the timestamp and log level fields. Some processing of logs from capture to
+storage via an ingestor agent is thus inevitable.
+
+For IronCore we align on the same set of field names and known values, timestamp
+formats and names for log detail level. This reduces the amount of configuration
+that an operator has to do on their log ingestor to extract all the information
+from IronCore component logs.
+
 ### Data Augmentation via Deployment
 
 IronCore components are generally deployed and discovered via Kubernetes.
