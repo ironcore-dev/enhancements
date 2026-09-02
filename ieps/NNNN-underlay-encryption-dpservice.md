@@ -156,27 +156,46 @@ This first IEP aims for the general functionality using software based cryptogra
 
 We propose new endpoints for handling of the Security Associations with functionalities Create and Delete.
 
-Create Security Association 
-- Needs:
-  - SPI
-  - Direction: Incoming/Outgoing
-  - Encryption:
-    - Algorithm - will start only with AES-GCM-256
-    - Key
-    - Salt
-  - Traffic selector:
-    - VNI
-    - Source or Destination IPv6 Address (depends on Direction)
-- Is used to create a new Security Association between two endpoints
+```
+enum CipherSuite {
+	AES_GCM_256 = 0;
+	//CHACHA20_POLY1305 = 1;          //for future reference, start with AES-GCM
+}
 
-Delete Security Association
-- Needs:
-  - SPI
-- Is used to remove a Security Association 
+message CreateSecurityAssociationRequest {
+	uint32 spi = 1;
+	TrafficDirection direction = 2;   //ingress or egress SA, reuse existing TrafficDirection enum
+	uint64 remote_prefix = 3;         //64 bit prefix of remote dpservice
+	uint32 vni = 4;                   //vni this SA is valid for
+	CipherSuite cipher_suite = 5;
+	bytes crypt_key = 6;              //de-/encryption key
+	bytes crypt_salt = 7;             //static salt for SA lifetime, part of per packet nonce
+	uint32 replay_window_size = 8;    //0 for no replay protection, >0 for replay window size of receiver
+}
 
-The create endpoint will be used for key rotation as well. 
-As each key rotation also creates a new SA with new SPI, key and salt, there is no explicit reason to have an update endpoint. Especially since the key rotation is to be managed by the control plane, an endpoint that suggest that dpservice handles the rotation could be misleading. 
-In order to handle the three policy options (or [processing choices](https://www.rfc-editor.org/info/rfc4301/#section-4.4.1)) DISCARD, BYPASS and PROTECT, needed especially in the case of outgoing traffic, a create call without a key would suffice to create a BYPASS policy to send traffic unencrypted. A create call with a key would change the policy to PROTECT. The default would be DISCARD, so packages to a destination IP/VNI combination that hasn't been configured yet, would simply be dropped.
+message CreateSecurityAssociationResponse {
+	Status status = 1;
+}
+
+message DeleteSecurityAssociationRequest {
+	uint32 spi = 1;
+}
+
+message DeleteSecurityAssociationResponse {
+	Status status = 1;
+}
+
+//Security Associations (IPsec)
+rpc CreateSecurityAssociation(CreateSecurityAssociationRequest) returns (CreateSecurityAssociationResponse) {}
+rpc DeleteSecurityAssociation(DeleteSecurityAssociationRequest) returns (DeleteSecurityAssociationResponse) {}
+```
+The intended use of this would be to create a Security Association for the combination of a prefix of another dpservice and a VNI either for the egress (packet will be encrypted) or the ingress path (packet will be decrytpted). For the lifetime of the SA the key and the salt are static and must match the lengths defined by the cipher suite.  
+For key rotation a new SA would be added via the create call and after waiting for a grace period the delete call can be used to delete the old SA via the SPI. Handling this needs to be done by the control plane. As each key rotation also creates a new SA with new SPI, key and salt, there is no explicit reason to have an update endpoint. Especially since the key rotation is to be managed by the control plane, an endpoint that suggests that dpservice handles the rotation could be misleading.
+
+This design hides the security policy handling (see "processing choices" in the [Security Policy Database (SPD)](https://www.rfc-editor.org/info/rfc4301/#section-4.4.1)). The idea would be to create an SPD entry with processing choice PROTECT when the create endpoint is called. If one existed with BYPASS before it would be changed accordingly. A BYPASS entry would exist beforehand if encryption would not be enabled from the start. To make this possible the CreateRoute call would need to be changed to create the policy entry. If the CreateRoute call would find an PROTECT entry in the SPD (the SA would be installed before the route) it must not change it to a BYPASS entry. Packets sent to destinations that have no SPD entry (i.e. no entry is found for a key made of `remote_prefix` and `vni`) would be dropped. This would mean an implicit DISCARD entry as default. If a PROTECT entry already exists, the connected SPI would need to be changed for the new one and a new SA would need to be created.
+
+Setting the `replay_window_size` of an SA to 0 would fullfil the request of disabled replay protection that was asked for in the past. As this is a setting that is based on each SA it would need to be reissued for each SA creation.
+
 
 ## Alternatives
 
