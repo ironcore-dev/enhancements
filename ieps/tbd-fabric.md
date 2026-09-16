@@ -1,5 +1,5 @@
 ---
-title: Wire
+title: Immutable, Declarative Network Configuration
 
 iep-number: tbd
 
@@ -18,7 +18,7 @@ reviewers:
 
 ---
 
-# IEP-tbd: Wire
+# IEP-tbd: Immutable, Declarative Network Configuration
 
 ## Table of Contents
 
@@ -161,8 +161,8 @@ the resources we can schedule configuration on.
 
 At the cluster scope, we define the following types:
 
-* **`wire.Node`** representing a node ready to act as a cell of our network.
-* **`wire.Interface`** representing an interface of a `Node`.
+* **`fabric.Node`** representing a node ready to act as a cell of our network.
+* **`fabric.Interface`** representing an interface of a `Node`.
 
 To actually make a `Node` function as a cell inside the network,
 routing traffic properly, a namespaced `Cell` resource is created.
@@ -193,14 +193,14 @@ resource, we gain several core benefits:
 Spine (cluster-scoped):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Node
 metadata:
     name: spine-01
 spec:
   providerID: sonic://spine-01
 ---
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Interface
 metadata:
   name: spine-01-if-01
@@ -214,14 +214,14 @@ spec:
 Leaf (cluster-scoped):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Node
 metadata:
     name: leaf-01
 spec:
   providerID: sonic://leaf-01
 ---
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Interface
 metadata:
   name: leaf-01-if-01
@@ -231,7 +231,7 @@ spec:
   nodeRef:
     name: leaf-01
 ---
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Interface
 metadata:
   name: leaf-01-if-02
@@ -245,12 +245,12 @@ spec:
 Server (cluster-scoped):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Node
 metadata:
   name: host-01
 ---
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Interface
 metadata:
   name: host-01-if-01
@@ -261,7 +261,7 @@ serverRef:
 Spine cell (namespaced):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Cell
 metadata:
   namespace: my-lab
@@ -282,7 +282,7 @@ spec:
 Leaf cell (namespaced):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Cell
 metadata:
   namespace: my-lab
@@ -304,7 +304,7 @@ spec:
 Host cell (namespaced):
 
 ```yaml
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Cell
 metadata:
   namespace: my-lab
@@ -337,7 +337,7 @@ in-use by another cell. This is done via the `Node.spec.cellRef` field:
 
 ```yaml
 # Unclaimed node
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Node
 metadata:
   name: my-unclaimed-node
@@ -345,7 +345,7 @@ spec:
   providerID: test://my-unclaimed-node
 ---
 # Claimed node
-apiVersion: wire.ironcore.dev
+apiVersion: fabric.ironcore.dev
 kind: Node
 metadata:
   name: my-claimed-node
